@@ -13,7 +13,7 @@ from ui.theme import UIStyles
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="0.0.2",
+    version="0.0.3",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
