@@ -5,15 +5,19 @@ import json
 from uuid import uuid4
 from nicegui import ui, app as nicegui_app
 from core.api import ModuleManifest
-from ui.layout import main_layout 
+from ui.layout import main_layout
 from ui.theme import UIStyles
+
+# Game state + logic live in the service; the React bundle drives it via this router.
+from .app.controller.service import bingo_service
+from .app.api import build_plugin_router
 # ==========================================
 # 1. MANIFEST
 # ==========================================
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="0.0.3",
+    version="0.1.0",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
@@ -22,18 +26,31 @@ manifest = ModuleManifest(
     auto_enable_on_install=False,
     repo_url="https://github.com/marvin1309/lyndrix-meeting-bingo",
     ui_route="/bingo",
+    react_ui=True,
+    react_routes=[
+        {
+            "path": "/bingo",
+            "label": "Meeting Bingo",
+            "icon": "grid_on",
+            "sidebar_visible": True,
+        },
+        {
+            "path": "/bingo/settings",
+            "label": "Meeting Bingo Einstellungen",
+            "icon": "settings",
+            "sidebar_visible": False,
+        },
+    ],
+    settings_ui_route="/bingo/settings",
     permissions={"subscribe": ["vault:ready_for_data"], "emit": []} # FIX: Rechte hinzugefügt
 )
 
 # ==========================================
 # 2. PLUGIN STATE & DEFAULTS
 # ==========================================
-plugin_state = {
-    "sessions": {}, 
-    "scoreboard_enabled": False,
-    "scoreboard": {},
-    "lobby_last_update": time.time()
-}
+# Shared with the React UI: this is the SAME dict the BingoService owns, so
+# mutations from the NiceGUI page below and from the HTTP router stay in sync.
+plugin_state = bingo_service.state
 
 DEFAULT_TERMS = [
     "Synergieeffekte", "Wir müssen das agil angehen", "Könnt ihr mich hören?", 
@@ -96,6 +113,11 @@ def render_settings_ui(ctx):
 # ==========================================
 def setup(ctx):
     ctx.log.info("STARTUP: Loading Meeting Bingo Plugin...")
+
+    # Bind the service to ctx (Vault access) and mount the React bundle's API.
+    # Registry mounts it at /api/plugins/lyndrix.plugin.bingo/ and enforces auth.
+    bingo_service.bind(ctx)
+    ctx.register_routes(build_plugin_router(bingo_service))
 
     # Standard-Begriffe Datei anlegen
     terms_file = os.path.join(os.path.dirname(__file__), "terms.txt")
