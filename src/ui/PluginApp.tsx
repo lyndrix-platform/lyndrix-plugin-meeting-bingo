@@ -37,15 +37,33 @@ function MBStyles() {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
-function useInterval(cb: () => void, ms: number | null) {
-  const ref = useRef(cb)
+// Self-scheduling poll: run fn, wait for it to settle, THEN wait `ms` before the
+// next run. Unlike setInterval this never overlaps requests — so a slow backend
+// can't make polls pile up and exhaust the browser's per-host connection limit
+// (which would freeze the whole UI, not just this plugin).
+function usePolling(fn: () => Promise<void>, ms: number) {
+  const fnRef = useRef(fn)
   useEffect(() => {
-    ref.current = cb
+    fnRef.current = fn
   })
   useEffect(() => {
-    if (ms === null) return
-    const id = setInterval(() => ref.current(), ms)
-    return () => clearInterval(id)
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        await fnRef.current()
+      } catch {
+        /* keep polling */
+      }
+      if (cancelled) return
+      timer = setTimeout(tick, ms)
+    }
+    timer = setTimeout(tick, ms)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [ms])
 }
 
@@ -186,10 +204,23 @@ function Scoreboard({ scores }: { scores: { player: string; wins: number }[] }) 
 
 // ─── Lobby ──────────────────────────────────────────────────────────────────────
 
+// In-SPA navigation the shell's BrowserRouter picks up — no full page reload, so
+// no cold-load redirect and no document-boundary that breaks the back button.
+function spaNavigate(path: string) {
+  window.history.pushState({}, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 function goSettings() {
   const p = window.location.pathname.replace(/\/+$/, '')
   const target = p.endsWith('/bingo') ? `${p}/settings` : `${p}/bingo/settings`
-  window.location.assign(target)
+  spaNavigate(target)
+}
+
+function goBackFromSettings() {
+  const p = window.location.pathname.replace(/\/+$/, '')
+  const target = p.endsWith('/settings') ? p.slice(0, -'/settings'.length) : p
+  spaNavigate(target)
 }
 
 function Lobby({
@@ -227,7 +258,7 @@ function Lobby({
   useEffect(() => {
     void load()
   }, [load])
-  useInterval(() => void load(), 2500)
+  usePolling(load, 2500)
 
   async function createSession() {
     setBusy(true)
@@ -409,7 +440,7 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
   useEffect(() => {
     void load()
   }, [load])
-  useInterval(() => void load(), 1500)
+  usePolling(load, 1500)
 
   useEffect(() => {
     if (!toast) return
@@ -567,7 +598,7 @@ function SettingsView() {
     <div className="mb-page" style={{ maxWidth: 680 }}>
       <div className="mb-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="lx-icon-btn" title="Zurück" onClick={() => window.history.back()}>
+          <button className="lx-icon-btn" title="Zurück" onClick={goBackFromSettings}>
             <span className="material-icons" style={{ fontSize: 18 }}>arrow_back</span>
           </button>
           <div>

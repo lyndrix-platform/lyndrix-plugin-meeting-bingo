@@ -55,6 +55,8 @@ export interface MarkResult {
 
 // ─── Fetch helper ──────────────────────────────────────────────────────────────
 
+const REQUEST_TIMEOUT_MS = 12_000
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY)
   const headers: Record<string, string> = {
@@ -63,7 +65,20 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...(init.headers as Record<string, string> | undefined),
   }
 
-  const res = await fetch(path, { ...init, headers })
+  // A hard timeout is essential for the self-scheduling poll loop: a hung request
+  // must reject so the loop can continue instead of stalling forever (and so polls
+  // never pile up and exhaust the browser's per-host connection limit).
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(path, { ...init, headers, signal: init.signal ?? ctrl.signal })
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') throw new Error(`Zeitüberschreitung: ${path}`)
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY)
