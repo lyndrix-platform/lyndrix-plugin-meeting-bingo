@@ -74,8 +74,21 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     let msg = `HTTP ${res.status}`
     try {
-      const body = (await res.json()) as { detail?: string }
-      msg = body.detail ?? msg
+      const body = (await res.json()) as { detail?: unknown }
+      const d = body?.detail
+      if (typeof d === 'string') {
+        msg = d
+      } else if (Array.isArray(d)) {
+        // FastAPI validation errors: [{ loc, msg, type }, …]
+        msg =
+          d
+            .map((e) =>
+              e && typeof e === 'object' && 'msg' in e ? String((e as { msg: unknown }).msg) : String(e),
+            )
+            .join('; ') || msg
+      } else if (d && typeof d === 'object') {
+        msg = (d as { error?: string }).error ?? JSON.stringify(d)
+      }
     } catch {
       /* ignore */
     }
@@ -114,10 +127,10 @@ export const bingoApi = {
       { method: 'POST', body: JSON.stringify({ nick, index }) },
     ),
 
-  getSettings: () => apiFetch<{ scoreboard_enabled: boolean }>(base('settings')),
+  getSettings: () => apiFetch<{ scoreboard_enabled: boolean }>(base('prefs')),
 
   setSettings: (scoreboard_enabled: boolean) =>
-    apiFetch<{ scoreboard_enabled: boolean }>(base('settings'), {
+    apiFetch<{ scoreboard_enabled: boolean }>(base('prefs'), {
       method: 'PUT',
       body: JSON.stringify({ scoreboard_enabled }),
     }),

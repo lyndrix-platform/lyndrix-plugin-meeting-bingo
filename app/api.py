@@ -108,11 +108,13 @@ def build_plugin_router(service: BingoService) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # ── Settings ─────────────────────────────────────────────────────────────
-    @router.get("/settings")
+    # NB: must NOT be "/settings" — core reserves /api/plugins/{id}/settings for
+    # its schema-driven settings system, which would shadow this router's route.
+    @router.get("/prefs")
     async def get_settings(_identity: ApiIdentity = Depends(require_permission("api:read"))):
         return service.get_settings()
 
-    @router.put("/settings")
+    @router.put("/prefs")
     async def put_settings(
         payload: SettingsPayload,
         _identity: ApiIdentity = Depends(require_permission("api:write")),
