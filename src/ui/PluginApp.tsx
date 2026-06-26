@@ -615,16 +615,20 @@ function BingoRoot() {
   const [nick, setNickState] = useState<string>(
     () => localStorage.getItem('lyndrix_bingo_nick') || '',
   )
-  const setNick = (n: string) => {
+  // Stable callbacks — passing fresh arrow fns would change Game's `load`
+  // identity every render and spin its mount effect into an infinite fetch loop.
+  const setNick = useCallback((n: string) => {
     setNickState(n)
     localStorage.setItem('lyndrix_bingo_nick', n)
-  }
+  }, [])
   const [sid, setSid] = useState<string | null>(null)
+  const onJoin = useCallback((s: string) => setSid(s), [])
+  const onLeave = useCallback(() => setSid(null), [])
 
   return sid ? (
-    <Game sid={sid} nick={nick} onLeave={() => setSid(null)} />
+    <Game sid={sid} nick={nick} onLeave={onLeave} />
   ) : (
-    <Lobby nick={nick} setNick={setNick} onJoin={(s) => setSid(s)} />
+    <Lobby nick={nick} setNick={setNick} onJoin={onJoin} />
   )
 }
 
