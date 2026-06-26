@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import confetti from 'canvas-confetti'
 import { bingoApi } from './lib/api'
 import type { Cell, LobbyOut, SessionView } from './lib/api'
 
@@ -51,10 +52,15 @@ function usePolling(fn: () => Promise<void>, ms: number) {
     let timer: ReturnType<typeof setTimeout>
     const tick = async () => {
       if (cancelled) return
-      try {
-        await fnRef.current()
-      } catch {
-        /* keep polling */
+      // Skip the request while the tab is hidden/backgrounded (don't poll a
+      // bfcached/background document); the cheap timer keeps the loop alive so it
+      // resumes automatically when the tab is visible again.
+      if (typeof document === 'undefined' || !document.hidden) {
+        try {
+          await fnRef.current()
+        } catch {
+          /* keep polling */
+        }
       }
       if (cancelled) return
       timer = setTimeout(tick, ms)
@@ -68,17 +74,9 @@ function usePolling(fn: () => Promise<void>, ms: number) {
 }
 
 function fireConfetti() {
-  const w = window as unknown as { confetti?: (o: unknown) => void }
-  const blast = () =>
-    w.confetti?.({ particleCount: 150, spread: 100, origin: { y: 0.6 } })
-  if (w.confetti) {
-    blast()
-    return
-  }
-  const s = document.createElement('script')
-  s.src = 'https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js'
-  s.onload = blast
-  document.head.appendChild(s)
+  // Bundled locally (no CDN) so it works on an offline/no-internet network and
+  // never accumulates hanging <script> tags.
+  confetti({ particleCount: 150, spread: 100, origin: { y: 0.6 } })
 }
 
 const MARKED = '#6366f1'

@@ -5,16 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "vite build --config vite.ui.config.ts",
-    "dev":   "vite build --config vite.ui.config.ts --watch"
+    "dev": "vite build --config vite.ui.config.ts --watch"
   },
   "dependencies": {
+    "canvas-confetti": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.3",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
     "typescript": "^5.6.2",
     "vite": "^5.4.10"
   }
