@@ -82,7 +82,10 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY)
-    window.location.href = '/login'
+    // SPA navigation the shell's router picks up — avoid a full-page reload
+    // (which the background poll loop could otherwise trigger mid-session).
+    window.history.pushState({}, '', '/login')
+    window.dispatchEvent(new PopStateEvent('popstate'))
     throw new Error('Nicht autorisiert')
   }
 

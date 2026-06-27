@@ -1,6 +1,6 @@
 # Lyndrix Meeting Bingo Plugin
 
-**Version:** 1.2.0  
+**Version:** 0.1.3  
 **Autor:** Lyndrix
 
 Ein Multiplayer Bullshit-Bingo Plugin, das nahtlos in die Lyndrix-Plattform integriert ist. Perfekt, um langatmige Meetings mit etwas Gamification aufzulockern.
@@ -24,7 +24,7 @@ Da es sich um ein Plugin für `lyndrix-core` handelt, muss es im Plugin-Verzeich
 
 2. Klone dieses Repository:
    ```bash
-   git clone https://github.com/lyndrix/lyndrix-meeting-bingo.git lyndrix.plugin.bingo
+   git clone https://github.com/lyndrix-platform/lyndrix-plugin-meeting-bingo.git lyndrix.plugin.bingo
    ```
    *Hinweis: Der Zielordnername `lyndrix.plugin.bingo` wird empfohlen, damit die ID im Manifest sauber matcht.*
 
@@ -44,14 +44,22 @@ Um es zu aktivieren:
 
 ## 🛠 Entwicklung & Struktur
 
-- `__init__.py`: Enthält die komplette Logik, UI (NiceGUI) und das Plugin-Manifest.
+- `entrypoint.py`: Dünne Wiring-Schicht (Manifest + Lifecycle), keine Geschäftslogik.
+- `app/logic/service.py`: Spielzustand und -regeln (Single Source of Truth).
+- `app/api.py`: REST-Router (`build_plugin_router`), gemountet unter `/api/plugins/lyndrix.plugin.bingo/`.
+- `app/ui/react/`: React-Frontend (`react_ui=True`), gebaut nach `app/ui/static/ui_bundle.js`.
 - `terms.txt`: Standardliste der Buzzwords (wird neu erstellt, falls gelöscht).
 
+### Build (Frontend)
+```bash
+npm install
+npm run build   # -> app/ui/static/ui_bundle.js
+```
+
 ### Abhängigkeiten
-Das Plugin verlässt sich auf Bibliotheken, die in `lyndrix-core` bereitgestellt werden:
-- `nicegui`
-- `core.modules.models`
-- `ui.layout` / `ui.theme`
+Das Plugin nutzt ausschließlich die stabile `core.api`-Oberfläche von `lyndrix-core`
+(Manifest, Router-Registrierung, Vault-Zugriff via `ctx`). Das Frontend ist eine
+lokal gebündelte React-App ohne externe CDN-Laufzeitabhängigkeiten.
 
 ## 📝 Lizenz
 Internes Tool. Nutzung auf eigene Gefahr während offizieller Meetings.

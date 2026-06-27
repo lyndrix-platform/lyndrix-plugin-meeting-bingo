@@ -1,15 +1,18 @@
 """REST API for Meeting Bingo.
 
 A single router mounted by core at ``/api/plugins/lyndrix.plugin.bingo/`` via
-``ctx.register_routes()``. The registry enforces authentication; gameplay uses
-``api:read`` (any authenticated user may play), settings use ``api:write``.
+``ctx.register_routes()``. The registry enforces authentication. Reads use
+``api:read``; every state-mutating route (create/join/mark, settings) uses
+``api:write`` so the permission model matches the HTTP verb (least privilege).
 
-The React bundle (src/ui) polls ``/lobby`` and ``/sessions/{sid}`` for the
-real-time view — same cadence as the NiceGUI 1 s timers — and POSTs joins/marks.
-All endpoints delegate to the shared ``BingoService`` so logic lives in one place.
+The React bundle (app/ui/react) polls ``/lobby`` and ``/sessions/{sid}`` for the
+real-time view and POSTs joins/marks. All endpoints delegate to the shared
+``BingoService`` so logic lives in one place. Vault-touching service calls are
+offloaded with ``asyncio.to_thread`` to keep the event loop responsive.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from core.api import ApiIdentity, require_permission
 
-from .controller.service import BingoService
+from .logic.service import BingoService
 
 
 class CreateSessionPayload(BaseModel):
@@ -27,11 +30,11 @@ class CreateSessionPayload(BaseModel):
 
 
 class JoinPayload(BaseModel):
-    nick: str
+    nick: str = Field(min_length=1, max_length=40)
 
 
 class MarkPayload(BaseModel):
-    nick: str
+    nick: str = Field(min_length=1, max_length=40)
     index: int
 
 
@@ -60,7 +63,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     @router.post("/sessions")
     async def create_session(
         payload: CreateSessionPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:read")),
+        _identity: ApiIdentity = Depends(require_permission("api:write")),
     ):
         try:
             sid = service.create_session(payload.name, payload.size, payload.terms)
@@ -72,7 +75,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def join(
         sid: str,
         payload: JoinPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:read")),
+        _identity: ApiIdentity = Depends(require_permission("api:write")),
     ):
         try:
             service.join_session(sid, payload.nick)
@@ -97,10 +100,12 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def mark(
         sid: str,
         payload: MarkPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:read")),
+        _identity: ApiIdentity = Depends(require_permission("api:write")),
     ):
         try:
-            result = service.mark_cell(sid, payload.nick, payload.index)
+            # mark_cell may write the scoreboard to Vault on a first win — offload
+            # the whole call so the blocking Vault round-trip never stalls the loop.
+            result = await asyncio.to_thread(service.mark_cell, sid, payload.nick, payload.index)
             return {"result": result, "session": service.session_view(sid, payload.nick)}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Session/Spieler nicht gefunden.") from exc
@@ -119,6 +124,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         payload: SettingsPayload,
         _identity: ApiIdentity = Depends(require_permission("api:write")),
     ):
-        return service.set_scoreboard_enabled(payload.scoreboard_enabled)
+        # set_scoreboard_enabled persists to Vault — offload the blocking call.
+        return await asyncio.to_thread(service.set_scoreboard_enabled, payload.scoreboard_enabled)
 
     return router

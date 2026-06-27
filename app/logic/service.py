@@ -1,10 +1,9 @@
 """Meeting Bingo — game state + logic (single source of truth).
 
 All game state lives in this service's in-process ``state`` dict (sessions are
-ephemeral; only the scoreboard is persisted to Vault). Both front-ends share the
-SAME object: the NiceGUI page aliases ``plugin_state = bingo_service.state`` and
-the React bundle drives it over the HTTP router in ``app/api.py``. Keeping the
-rules here (``check_win``, scoring) means neither UI re-implements game logic.
+ephemeral; only the scoreboard is persisted to Vault). The React bundle drives
+it over the HTTP router in ``app/api.py``; keeping the rules here (``check_win``,
+scoring) means the UI never re-implements game logic.
 """
 import os
 import json
@@ -13,7 +12,7 @@ import random
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
-# Plugin root = .../<plugin>/app/controller/service.py → up three levels.
+# Plugin root = .../<plugin>/app/logic/service.py → up three levels.
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 _TERMS_FILE = os.path.join(_ROOT, "terms.txt")
 
@@ -87,6 +86,8 @@ class BingoService:
                 pass
 
     # ── Vault persistence (scoreboard only) ─────────────────────────────────
+    # NB: get_secret/set_secret are synchronous (hvac) Vault round-trips. Callers
+    # in async handlers must offload these via asyncio.to_thread (see app/api.py).
     def load_from_vault(self) -> None:
         if self._ctx is None:
             return
@@ -96,7 +97,8 @@ class BingoService:
         if stored:
             try:
                 self.state["scoreboard"] = json.loads(stored)
-            except Exception:
+            except (json.JSONDecodeError, TypeError) as exc:
+                self._ctx.log.error(f"Failed to parse stored scoreboard, resetting: {exc}")
                 self.state["scoreboard"] = {}
 
     def _save_scoreboard(self) -> None:
@@ -104,8 +106,8 @@ class BingoService:
             return
         try:
             self._ctx.set_secret("bingo_scoreboard", json.dumps(self.state["scoreboard"]))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - Vault client raises varied errors; log and continue
+            self._ctx.log.error(f"Failed to persist scoreboard to Vault: {exc}")
 
     # ── Settings ─────────────────────────────────────────────────────────────
     def get_settings(self) -> Dict[str, Any]:
@@ -116,8 +118,8 @@ class BingoService:
         if self._ctx is not None:
             try:
                 self._ctx.set_secret("scoreboard_enabled", str(bool(enabled)))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - Vault client raises varied errors; log and continue
+                self._ctx.log.error(f"Failed to persist scoreboard_enabled to Vault: {exc}")
         return self.get_settings()
 
     # ── Scoreboard ───────────────────────────────────────────────────────────
