@@ -17,7 +17,7 @@ from .app.api import build_plugin_router
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="0.2.0",
+    version="0.3.0",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
@@ -27,6 +27,9 @@ manifest = ModuleManifest(
     repo_url="https://github.com/lyndrix-platform/lyndrix-plugin-meeting-bingo",
     ui_route="/bingo",
     react_ui=True,
+    # i18next-shaped namespace served to the React UI; core auto-registers
+    # locales/bingo.<locale>.json and adds "bingo" to the client allowlist.
+    i18n_namespace="bingo",
     react_routes=[
         {
             "path": "/bingo",

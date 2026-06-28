@@ -1,4 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+// react-i18next is provided by the host shell (window.__lyndrix_react_i18next);
+// declared external in vite.ui.config.ts so the plugin shares the host's i18n
+// instance + active language. Strings come from locales/bingo.<locale>.json,
+// auto-registered by core and served via the catalog (namespace "bingo").
+import { useTranslation } from 'react-i18next'
 import confetti from 'canvas-confetti'
 import { bingoApi } from './lib/api'
 import type { Cell, LobbyOut, SessionView } from './lib/api'
@@ -16,14 +21,14 @@ const MB_STYLES = `
 .mb-accent { height: 4px; width: 100%; border-radius: 6px 6px 0 0; }
 .mb-board { display: grid; gap: 8px; width: 100%; }
 .mb-board--mini { gap: 3px; }
-.mb-cell { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 6px; border-radius: var(--lx-radius-sm, 8px); border: 1px solid var(--lx-border-soft); background: var(--lx-surface); color: var(--lx-text); cursor: pointer; font-size: 0.72rem; font-weight: 600; line-height: 1.12; user-select: none; transition: transform .08s ease, background .12s ease, border-color .12s ease; overflow: hidden; }
+.mb-cell { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 6px; border-radius: var(--lx-radius-sm, 8px); border: 1px solid var(--lx-glass-border, var(--lx-border-soft)); background: var(--lx-surface-glass, var(--lx-surface)); -webkit-backdrop-filter: blur(12px) saturate(150%); backdrop-filter: blur(12px) saturate(150%); color: var(--lx-text); cursor: pointer; font-size: 0.72rem; font-weight: 600; line-height: 1.12; user-select: none; transition: transform .08s ease, background .12s ease, border-color .12s ease; overflow: hidden; }
 .mb-cell:not(:disabled):hover { border-color: var(--lx-border); }
 .mb-cell:not(:disabled):active { transform: scale(0.95); }
 .mb-cell span { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .mb-cell--mini { aspect-ratio: 1 / 1; padding: 2px; font-size: 0.5rem; font-weight: 600; line-height: 1.05; cursor: default; border-radius: 4px; color: var(--lx-text-muted); }
 .mb-cell--mini span { -webkit-line-clamp: 3; }
 .mb-toast { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 50; padding: 12px 18px; border-radius: var(--lx-radius-md, 10px); font-size: 0.875rem; font-weight: 600; box-shadow: 0 8px 32px rgba(0,0,0,.35); max-width: calc(100vw - 24px); text-align: center; }
-.mb-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border: 1px solid var(--lx-border-soft); border-radius: var(--lx-radius-md, 10px); background: var(--lx-surface); }
+.mb-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border: 1px solid var(--lx-glass-border, var(--lx-border-soft)); border-radius: var(--lx-radius-md, 10px); background: var(--lx-surface-glass, var(--lx-surface)); -webkit-backdrop-filter: blur(14px) saturate(150%); backdrop-filter: blur(14px) saturate(150%); }
 .mb-score-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; }
 @media (max-width: 760px) {
   .mb-page { padding: 16px 12px 40px; }
@@ -156,6 +161,7 @@ function MiniBoard({ cells, size }: { cells: Cell[]; size: number }) {
 // ─── Scoreboard ─────────────────────────────────────────────────────────────────
 
 function Scoreboard({ scores }: { scores: { player: string; wins: number }[] }) {
+  const { t } = useTranslation('bingo')
   return (
     <div className="lx-card" style={{ overflow: 'hidden' }}>
       <div className="mb-accent" style={{ background: 'linear-gradient(90deg,#fbbf24,#f59e0b,#eab308)' }} />
@@ -164,11 +170,11 @@ function Scoreboard({ scores }: { scores: { player: string; wins: number }[] }) 
           <span className="material-icons" style={{ fontSize: 20, color: '#f59e0b' }}>
             emoji_events
           </span>
-          <span className="lx-section-title">Wall of Shame</span>
+          <span className="lx-section-title">{t('scoreboard.title', { defaultValue: 'Wall of Shame' })}</span>
         </div>
         {scores.length === 0 ? (
           <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--lx-text-muted)', fontStyle: 'italic' }}>
-            Noch keine Gewinner. Zeit für das nächste Meeting!
+            {t('scoreboard.empty', { defaultValue: 'Noch keine Gewinner. Zeit für das nächste Meeting!' })}
           </p>
         ) : (
           <div style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--lx-border-soft)' }}>
@@ -188,7 +194,7 @@ function Scoreboard({ scores }: { scores: { player: string; wins: number }[] }) 
                     {medal} {s.player}
                   </span>
                   <span className="lx-mono" style={{ color: 'var(--lx-text-muted)' }}>
-                    {s.wins} Siege
+                    {t('scoreboard.wins', { count: s.wins, defaultValue: '{{count}} Siege' })}
                   </span>
                 </div>
               )
@@ -230,6 +236,8 @@ function Lobby({
   setNick: (n: string) => void
   onJoin: (sid: string) => void
 }) {
+  // Aliased to `tr` because createSession() uses a local `t` for the terms array.
+  const { t: tr } = useTranslation('bingo')
   const [data, setData] = useState<LobbyOut | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -249,9 +257,9 @@ function Lobby({
         setTermsInit(true)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Fehler beim Laden')
+      setError(e instanceof Error ? e.message : tr('common.loadError', { defaultValue: 'Fehler beim Laden' }))
     }
-  }, [termsInit])
+  }, [termsInit, tr])
 
   useEffect(() => {
     void load()
@@ -266,10 +274,13 @@ function Lobby({
       const t = terms.split('\n').map((s) => s.trim()).filter(Boolean)
       await bingoApi.createSession({ name, size, terms: t })
       setName('')
-      setNotice(`Session erstellt — tritt ihr unten als „${nick || '…'}" bei.`)
+      setNotice(tr('lobby.sessionCreated', {
+        nick: nick || '…',
+        defaultValue: 'Session erstellt — tritt ihr unten als „{{nick}}“ bei.',
+      }))
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erstellen fehlgeschlagen')
+      setError(e instanceof Error ? e.message : tr('lobby.createFailed', { defaultValue: 'Erstellen fehlgeschlagen' }))
     } finally {
       setBusy(false)
     }
@@ -277,7 +288,7 @@ function Lobby({
 
   async function join(sid: string) {
     if (!nick.trim()) {
-      setError('Bitte zuerst einen Nickname eingeben.')
+      setError(tr('lobby.nicknameRequired', { defaultValue: 'Bitte zuerst einen Nickname eingeben.' }))
       return
     }
     setBusy(true)
@@ -286,7 +297,7 @@ function Lobby({
       await bingoApi.join(sid, nick.trim())
       onJoin(sid)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Beitritt fehlgeschlagen')
+      setError(e instanceof Error ? e.message : tr('lobby.joinFailed', { defaultValue: 'Beitritt fehlgeschlagen' }))
     } finally {
       setBusy(false)
     }
@@ -300,12 +311,15 @@ function Lobby({
     <div className="mb-page">
       <div className="mb-header">
         <div>
-          <h1 className="mb-h1">Meeting Bingo</h1>
-          <p className="mb-sub">Bullshit-Bingo für langatmige Meetings · {sessions.length} aktive Session{sessions.length !== 1 ? 's' : ''}</p>
+          <h1 className="mb-h1">{tr('lobby.title', { defaultValue: 'Meeting Bingo' })}</h1>
+          <p className="mb-sub">{tr('lobby.subtitle', {
+            count: sessions.length,
+            defaultValue: 'Bullshit-Bingo für langatmige Meetings · {{count}} aktive Sessions',
+          })}</p>
         </div>
         <button className="lx-btn lx-btn--secondary lx-btn--sm" onClick={goSettings}>
           <span className="material-icons" style={{ fontSize: 15 }}>settings</span>
-          Settings
+          {tr('common.settings', { defaultValue: 'Settings' })}
         </button>
       </div>
 
@@ -317,18 +331,18 @@ function Lobby({
         <div className="lx-card" style={{ overflow: 'hidden' }}>
           <div className="mb-accent" style={{ background: 'linear-gradient(90deg,#818cf8,#38bdf8,#22d3ee)' }} />
           <div className="mb-card-pad">
-            <span className="lx-section-title">Neue Session starten</span>
+            <span className="lx-section-title">{tr('lobby.create.title', { defaultValue: 'Neue Session starten' })}</span>
             <div>
-              <label className="lx-label">Session-Name</label>
+              <label className="lx-label">{tr('lobby.create.nameLabel', { defaultValue: 'Session-Name' })}</label>
               <input
                 className="lx-input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Daily Standup"
+                placeholder={tr('lobby.create.namePlaceholder', { defaultValue: 'Daily Standup' })}
               />
             </div>
             <div>
-              <label className="lx-label">Feldgröße: {size}×{size}</label>
+              <label className="lx-label">{tr('lobby.create.sizeLabel', { size, defaultValue: 'Feldgröße: {{size}}×{{size}}' })}</label>
               <input
                 type="range"
                 min={3}
@@ -340,7 +354,7 @@ function Lobby({
             </div>
             <div>
               <label className="lx-label">
-                Begriffe (eine Zeile pro Begriff) ·{' '}
+                {tr('lobby.create.termsLabel', { defaultValue: 'Begriffe (eine Zeile pro Begriff) · ' })}
                 <span style={{ color: termCount < minTerms ? 'var(--lx-state-down)' : 'var(--lx-text-muted)' }}>
                   {termCount}/{minTerms}
                 </span>
@@ -358,7 +372,7 @@ function Lobby({
               onClick={() => void createSession()}
               disabled={busy || !name.trim() || termCount < minTerms}
             >
-              Session erstellen
+              {tr('lobby.create.submit', { defaultValue: 'Session erstellen' })}
             </button>
           </div>
         </div>
@@ -367,20 +381,20 @@ function Lobby({
         <div className="lx-card" style={{ overflow: 'hidden' }}>
           <div className="mb-accent" style={{ background: 'linear-gradient(90deg,#34d399,#2dd4bf,#4ade80)' }} />
           <div className="mb-card-pad">
-            <span className="lx-section-title">Session beitreten</span>
+            <span className="lx-section-title">{tr('lobby.join.title', { defaultValue: 'Session beitreten' })}</span>
             <div>
-              <label className="lx-label">Dein Nickname</label>
+              <label className="lx-label">{tr('lobby.join.nickLabel', { defaultValue: 'Dein Nickname' })}</label>
               <input
                 className="lx-input"
                 value={nick}
                 onChange={(e) => setNick(e.target.value)}
-                placeholder="Gast"
+                placeholder={tr('lobby.join.nickPlaceholder', { defaultValue: 'Gast' })}
               />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {sessions.length === 0 ? (
                 <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--lx-text-muted)', fontStyle: 'italic' }}>
-                  Keine aktiven Sessions.
+                  {tr('lobby.join.noSessions', { defaultValue: 'Keine aktiven Sessions.' })}
                 </p>
               ) : (
                 sessions.map((s) => (
@@ -388,7 +402,11 @@ function Lobby({
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--lx-text)' }}>{s.name}</div>
                       <div style={{ fontSize: '0.6875rem', color: 'var(--lx-text-muted)' }}>
-                        {s.players} Spieler · {s.size}×{s.size}
+                        {tr('lobby.join.players', {
+                          count: s.players,
+                          size: s.size,
+                          defaultValue: '{{count}} Spieler · {{size}}×{{size}}',
+                        })}
                         {s.winners > 0 && ` · ${s.winners} 🏆`}
                       </div>
                     </div>
@@ -397,7 +415,7 @@ function Lobby({
                       onClick={() => void join(s.id)}
                       disabled={busy}
                     >
-                      Beitreten
+                      {tr('lobby.join.submit', { defaultValue: 'Beitreten' })}
                     </button>
                   </div>
                 ))
@@ -419,6 +437,7 @@ function Lobby({
 // ─── Game ───────────────────────────────────────────────────────────────────────
 
 function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () => void }) {
+  const { t } = useTranslation('bingo')
   const [session, setSession] = useState<SessionView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; kind: 'win' | 'meh' } | null>(null)
@@ -429,11 +448,11 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
       setSession(s)
       setError(null)
     } catch (e) {
-      const m = e instanceof Error ? e.message : 'Fehler'
+      const m = e instanceof Error ? e.message : t('common.error', { defaultValue: 'Fehler' })
       if (m.includes('nicht gefunden')) onLeave()
       else setError(m)
     }
-  }, [sid, nick, onLeave])
+  }, [sid, nick, onLeave, t])
 
   useEffect(() => {
     void load()
@@ -453,12 +472,12 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
       setSession(s)
       if (result.first_winner) {
         fireConfetti()
-        setToast({ msg: 'BINGO! 🎉 Du hast das Meeting überlebt!', kind: 'win' })
+        setToast({ msg: t('game.bingoToast', { defaultValue: 'BINGO! 🎉 Du hast das Meeting überlebt!' }), kind: 'win' })
       } else if (result.sarcastic) {
         setToast({ msg: result.sarcastic, kind: 'meh' })
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Fehler')
+      setError(e instanceof Error ? e.message : t('common.error', { defaultValue: 'Fehler' }))
     }
   }
 
@@ -490,13 +509,13 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
         <div style={{ minWidth: 0 }}>
           <h1 className="mb-h1">{session.name}</h1>
           <p className="mb-sub">
-            Dein Board · {nick}
-            {session.you.won && ' · 🏆 Bingo!'}
+            {t('game.subtitle', { nick, defaultValue: 'Dein Board · {{nick}}' })}
+            {session.you.won && t('game.wonSuffix', { defaultValue: ' · 🏆 Bingo!' })}
           </p>
         </div>
         <button className="lx-btn lx-btn--secondary lx-btn--sm" onClick={onLeave}>
           <span className="material-icons" style={{ fontSize: 15 }}>logout</span>
-          Verlassen
+          {t('game.leave', { defaultValue: 'Verlassen' })}
         </button>
       </div>
 
@@ -512,10 +531,10 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
         <div className="lx-card" style={{ overflow: 'hidden' }}>
           <div className="mb-accent" style={{ background: 'linear-gradient(90deg,#a78bfa,#8b5cf6,#818cf8)' }} />
           <div className="mb-card-pad">
-            <span className="lx-section-title">Andere Spieler</span>
+            <span className="lx-section-title">{t('game.others', { defaultValue: 'Andere Spieler' })}</span>
             {session.others.length === 0 ? (
               <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--lx-text-muted)', fontStyle: 'italic' }}>
-                Noch niemand sonst dabei.
+                {t('game.noOthers', { defaultValue: 'Noch niemand sonst dabei.' })}
               </p>
             ) : (
               session.others.map((p) => (
@@ -534,13 +553,13 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--lx-accent)' }}>{p.nick}</div>
                       <div style={{ fontSize: '0.6875rem', color: 'var(--lx-text-muted)' }}>
-                        {p.marks}/{p.total} markiert
+                        {t('game.marked', { marks: p.marks, total: p.total, defaultValue: '{{marks}}/{{total}} markiert' })}
                       </div>
                     </div>
                     {p.won ? (
                       <span
                         className="material-icons"
-                        title={p.place ? `${p.place}. Platz` : 'Bingo'}
+                        title={p.place ? t('game.place', { place: p.place, defaultValue: '{{place}}. Platz' }) : t('game.bingo', { defaultValue: 'Bingo' })}
                         style={{ fontSize: 20, color: p.place === 1 ? '#f59e0b' : 'var(--lx-text-muted)' }}
                       >
                         emoji_events
@@ -565,6 +584,7 @@ function Game({ sid, nick, onLeave }: { sid: string; nick: string; onLeave: () =
 // ─── Settings ───────────────────────────────────────────────────────────────────
 
 function SettingsView() {
+  const { t } = useTranslation('bingo')
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -574,8 +594,8 @@ function SettingsView() {
     bingoApi
       .getSettings()
       .then((s) => setEnabled(s.scoreboard_enabled))
-      .catch((e) => setError(e instanceof Error ? e.message : 'Fehler'))
-  }, [])
+      .catch((e) => setError(e instanceof Error ? e.message : t('common.error', { defaultValue: 'Fehler' })))
+  }, [t])
 
   async function save(next: boolean) {
     setBusy(true)
@@ -584,9 +604,9 @@ function SettingsView() {
     try {
       const s = await bingoApi.setSettings(next)
       setEnabled(s.scoreboard_enabled)
-      setNotice('Einstellungen gespeichert.')
+      setNotice(t('settings.saved', { defaultValue: 'Einstellungen gespeichert.' }))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Speichern fehlgeschlagen (nur Admins)')
+      setError(e instanceof Error ? e.message : t('settings.saveFailed', { defaultValue: 'Speichern fehlgeschlagen (nur Admins)' }))
     } finally {
       setBusy(false)
     }
@@ -596,12 +616,12 @@ function SettingsView() {
     <div className="mb-page" style={{ maxWidth: 680 }}>
       <div className="mb-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="lx-icon-btn" title="Zurück" onClick={goBackFromSettings}>
+          <button className="lx-icon-btn" title={t('common.back', { defaultValue: 'Zurück' })} onClick={goBackFromSettings}>
             <span className="material-icons" style={{ fontSize: 18 }}>arrow_back</span>
           </button>
           <div>
-            <h1 className="mb-h1">Meeting Bingo</h1>
-            <p className="mb-sub">Einstellungen</p>
+            <h1 className="mb-h1">{t('lobby.title', { defaultValue: 'Meeting Bingo' })}</h1>
+            <p className="mb-sub">{t('settings.subtitle', { defaultValue: 'Einstellungen' })}</p>
           </div>
         </div>
       </div>
@@ -612,7 +632,7 @@ function SettingsView() {
       <div className="lx-card" style={{ overflow: 'hidden', marginTop: 12 }}>
         <div className="mb-accent" style={{ background: 'linear-gradient(90deg,#34d399,#2dd4bf,#4ade80)' }} />
         <div className="mb-card-pad">
-          <span className="lx-section-title">Ethik-Einstellungen</span>
+          <span className="lx-section-title">{t('settings.ethicsTitle', { defaultValue: 'Ethik-Einstellungen' })}</span>
           {enabled === null ? (
             <div className="lx-spinner" />
           ) : (
@@ -625,12 +645,12 @@ function SettingsView() {
                 style={{ width: 18, height: 18, accentColor: 'var(--lx-accent)' }}
               />
               <span style={{ fontSize: '0.875rem', color: 'var(--lx-text)' }}>
-                Scoreboard aktivieren (erfasst Gewinner permanent)
+                {t('settings.scoreboardToggle', { defaultValue: 'Scoreboard aktivieren (erfasst Gewinner permanent)' })}
               </span>
             </label>
           )}
           <p style={{ margin: 0, fontSize: '0.75rem', color: '#f59e0b', fontStyle: 'italic' }}>
-            Tipp: Je weniger Beweise, desto besser für den Ethikcodex!
+            {t('settings.tip', { defaultValue: 'Tipp: Je weniger Beweise, desto besser für den Ethikcodex!' })}
           </p>
         </div>
       </div>
