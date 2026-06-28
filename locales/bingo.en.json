@@ -1,0 +1,59 @@
+{
+  "common": {
+    "settings": "Settings",
+    "back": "Back",
+    "loadError": "Failed to load",
+    "error": "Error"
+  },
+  "scoreboard": {
+    "title": "Wall of Shame",
+    "empty": "No winners yet. Time for the next meeting!",
+    "wins_one": "{{count}} win",
+    "wins_other": "{{count}} wins"
+  },
+  "lobby": {
+    "title": "Meeting Bingo",
+    "subtitle_one": "Bullshit bingo for long-winded meetings · {{count}} active session",
+    "subtitle_other": "Bullshit bingo for long-winded meetings · {{count}} active sessions",
+    "sessionCreated": "Session created — join below as “{{nick}}”.",
+    "createFailed": "Creation failed",
+    "joinFailed": "Could not join",
+    "nicknameRequired": "Please enter a nickname first.",
+    "create": {
+      "title": "Start a new session",
+      "nameLabel": "Session name",
+      "namePlaceholder": "Daily Standup",
+      "sizeLabel": "Field size: {{size}}×{{size}}",
+      "termsLabel": "Terms (one per line) · ",
+      "submit": "Create session"
+    },
+    "join": {
+      "title": "Join a session",
+      "nickLabel": "Your nickname",
+      "nickPlaceholder": "Guest",
+      "noSessions": "No active sessions.",
+      "players_one": "{{count}} player · {{size}}×{{size}}",
+      "players_other": "{{count}} players · {{size}}×{{size}}",
+      "submit": "Join"
+    }
+  },
+  "game": {
+    "bingoToast": "BINGO! 🎉 You survived the meeting!",
+    "subtitle": "Your board · {{nick}}",
+    "wonSuffix": " · 🏆 Bingo!",
+    "leave": "Leave",
+    "others": "Other players",
+    "noOthers": "Nobody else here yet.",
+    "marked": "{{marks}}/{{total}} marked",
+    "place": "Place {{place}}",
+    "bingo": "Bingo"
+  },
+  "settings": {
+    "subtitle": "Settings",
+    "ethicsTitle": "Ethics settings",
+    "scoreboardToggle": "Enable scoreboard (permanently records winners)",
+    "tip": "Tip: the less evidence, the better for the code of ethics!",
+    "saved": "Settings saved.",
+    "saveFailed": "Save failed (admins only)"
+  }
+}

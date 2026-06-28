@@ -1,0 +1,59 @@
+{
+  "common": {
+    "settings": "Einstellungen",
+    "back": "Zurück",
+    "loadError": "Fehler beim Laden",
+    "error": "Fehler"
+  },
+  "scoreboard": {
+    "title": "Wall of Shame",
+    "empty": "Noch keine Gewinner. Zeit für das nächste Meeting!",
+    "wins_one": "{{count}} Sieg",
+    "wins_other": "{{count}} Siege"
+  },
+  "lobby": {
+    "title": "Meeting Bingo",
+    "subtitle_one": "Bullshit-Bingo für langatmige Meetings · {{count}} aktive Session",
+    "subtitle_other": "Bullshit-Bingo für langatmige Meetings · {{count}} aktive Sessions",
+    "sessionCreated": "Session erstellt — tritt ihr unten als „{{nick}}“ bei.",
+    "createFailed": "Erstellen fehlgeschlagen",
+    "joinFailed": "Beitritt fehlgeschlagen",
+    "nicknameRequired": "Bitte zuerst einen Nickname eingeben.",
+    "create": {
+      "title": "Neue Session starten",
+      "nameLabel": "Session-Name",
+      "namePlaceholder": "Daily Standup",
+      "sizeLabel": "Feldgröße: {{size}}×{{size}}",
+      "termsLabel": "Begriffe (eine Zeile pro Begriff) · ",
+      "submit": "Session erstellen"
+    },
+    "join": {
+      "title": "Session beitreten",
+      "nickLabel": "Dein Nickname",
+      "nickPlaceholder": "Gast",
+      "noSessions": "Keine aktiven Sessions.",
+      "players_one": "{{count}} Spieler · {{size}}×{{size}}",
+      "players_other": "{{count}} Spieler · {{size}}×{{size}}",
+      "submit": "Beitreten"
+    }
+  },
+  "game": {
+    "bingoToast": "BINGO! 🎉 Du hast das Meeting überlebt!",
+    "subtitle": "Dein Board · {{nick}}",
+    "wonSuffix": " · 🏆 Bingo!",
+    "leave": "Verlassen",
+    "others": "Andere Spieler",
+    "noOthers": "Noch niemand sonst dabei.",
+    "marked": "{{marks}}/{{total}} markiert",
+    "place": "{{place}}. Platz",
+    "bingo": "Bingo"
+  },
+  "settings": {
+    "subtitle": "Einstellungen",
+    "ethicsTitle": "Ethik-Einstellungen",
+    "scoreboardToggle": "Scoreboard aktivieren (erfasst Gewinner permanent)",
+    "tip": "Tipp: Je weniger Beweise, desto besser für den Ethikcodex!",
+    "saved": "Einstellungen gespeichert.",
+    "saveFailed": "Speichern fehlgeschlagen (nur Admins)"
+  }
+}
