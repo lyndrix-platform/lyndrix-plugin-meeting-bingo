@@ -5,8 +5,9 @@ All game state and rules live in ``app/logic/service.py``; the HTTP router in
 front-end (``react_ui=True``). This module must stay logic-free wiring.
 """
 import asyncio
+import time
 
-from core.api import ModuleManifest
+from core.api import ModuleManifest, PluginHealthStatus
 
 from .app.logic.service import bingo_service
 from .app.api import build_plugin_router
@@ -17,7 +18,7 @@ from .app.api import build_plugin_router
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="0.3.0",
+    version="0.3.1",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
@@ -69,3 +70,55 @@ def setup(ctx):
         # load_from_vault performs synchronous hvac round-trips — offload it so
         # the boot event loop is never blocked.
         await asyncio.to_thread(bingo_service.load_from_vault)
+
+
+# ==========================================
+# 3. HEALTH — functional liveness probe
+# ==========================================
+async def health(ctx) -> PluginHealthStatus:
+    """Functional health probe.
+
+    Meeting Bingo holds no DB — its runtime is the in-memory game engine plus
+    the word catalog it deals boards from. So a meaningful probe checks exactly
+    that: the service is bound to a context, its game-state structure is intact,
+    and a non-empty term list is loadable (from disk, with a built-in fallback).
+    An engine that can't deal a board is broken even though ``setup()`` ran.
+    The disk read is offloaded to keep the event loop free.
+    """
+    start = time.perf_counter()
+
+    if getattr(bingo_service, "_ctx", None) is None:
+        return PluginHealthStatus(status="error", details={"reason": "service_not_bound"})
+
+    state = getattr(bingo_service, "state", None)
+    required_keys = {"sessions", "scoreboard_enabled", "scoreboard"}
+    if not isinstance(state, dict) or not required_keys.issubset(state.keys()):
+        return PluginHealthStatus(
+            status="error",
+            details={"reason": "state_corrupted", "state_keys": sorted(state.keys()) if isinstance(state, dict) else None},
+        )
+
+    try:
+        terms = await asyncio.to_thread(bingo_service.default_terms)
+    except Exception as exc:
+        return PluginHealthStatus(
+            status="error",
+            details={"reason": "terms_unavailable", "error": str(exc)},
+            latency_ms=round((time.perf_counter() - start) * 1000, 1),
+        )
+
+    latency = round((time.perf_counter() - start) * 1000, 1)
+    sessions = state.get("sessions") or {}
+    details = {
+        "terms_available": len(terms),
+        "active_sessions": len(sessions) if hasattr(sessions, "__len__") else 0,
+        "scoreboard_enabled": bool(state.get("scoreboard_enabled")),
+    }
+    # A standard bingo board needs 24 distinct terms (5x5 minus the free centre).
+    if len(terms) < 24:
+        return PluginHealthStatus(
+            status="degraded",
+            details={**details, "reason": "insufficient_terms", "minimum_required": 24},
+            latency_ms=latency,
+        )
+    return PluginHealthStatus(status="ok", details=details, latency_ms=latency)
