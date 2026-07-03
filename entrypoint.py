@@ -26,7 +26,10 @@ manifest = ModuleManifest(
     min_core_version="1.0.0",
     auto_enable_on_install=False,
     repo_url="https://github.com/lyndrix-platform/lyndrix-plugin-meeting-bingo",
-    ui_route="/bingo",
+    # React-only plugin: the React bundle is the sole front-end (react_routes
+    # below drive the React sidebar). Deliberately NO ui_route — that field is
+    # the *NiceGUI* sidebar target, and declaring it made the NiceGUI shell list
+    # a "Meeting Bingo" link to a page that was never registered (hard 404).
     react_ui=True,
     # i18next-shaped namespace served to the React UI; core auto-registers
     # locales/bingo.<locale>.json and adds "bingo" to the client allowlist.
