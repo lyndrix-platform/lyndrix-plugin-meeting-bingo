@@ -91,8 +91,14 @@ class BingoService:
     def load_from_vault(self) -> None:
         if self._ctx is None:
             return
-        if self._ctx.get_secret("scoreboard_enabled") == "True":
-            self.state["scoreboard_enabled"] = True
+        # Symmetric restore: assign BOTH True and False from Vault. The old
+        # `if secret == "True"` one-armed check silently kept the __init__
+        # default (False) whenever the read missed, so the checkbox reset on
+        # every reboot. Tolerate bool values too (Vault KV may round-trip the
+        # native type); only a missing secret keeps the current state.
+        raw = self._ctx.get_secret("scoreboard_enabled")
+        if raw is not None:
+            self.state["scoreboard_enabled"] = raw in (True, "True")
         stored = self._ctx.get_secret("bingo_scoreboard")
         if stored:
             try:
