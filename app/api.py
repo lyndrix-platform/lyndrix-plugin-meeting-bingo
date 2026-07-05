@@ -22,6 +22,14 @@ from core.api import ApiIdentity, require_permission
 
 from .logic.service import BingoService
 
+# Plugin-scoped permission ids. Gating routes on the fully-qualified
+# plugin:<id>:api:* (rather than bare api:read/api:write) makes the manifest's
+# scoped viewer/operator roles actually unlock routes, while global api:read/
+# api:write holders keep working via the core's one-directional fallback.
+PLUGIN_ID = "lyndrix.plugin.bingo"
+PERM_READ = f"plugin:{PLUGIN_ID}:api:read"
+PERM_WRITE = f"plugin:{PLUGIN_ID}:api:write"
+
 
 class CreateSessionPayload(BaseModel):
     name: str
@@ -47,7 +55,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
 
     # ── Lobby / scoreboard ───────────────────────────────────────────────────
     @router.get("/lobby")
-    async def lobby(_identity: ApiIdentity = Depends(require_permission("api:read"))):
+    async def lobby(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
         return {
             "sessions": service.list_sessions(),
             "scoreboard_enabled": service.state["scoreboard_enabled"],
@@ -56,14 +64,14 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         }
 
     @router.get("/scoreboard")
-    async def scoreboard(_identity: ApiIdentity = Depends(require_permission("api:read"))):
+    async def scoreboard(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
         return {"enabled": service.state["scoreboard_enabled"], "scores": service.scoreboard()}
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     @router.post("/sessions")
     async def create_session(
         payload: CreateSessionPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:write")),
+        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
         try:
             sid = service.create_session(payload.name, payload.size, payload.terms)
@@ -75,7 +83,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def join(
         sid: str,
         payload: JoinPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:write")),
+        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
         try:
             service.join_session(sid, payload.nick)
@@ -89,7 +97,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def get_session(
         sid: str,
         nick: str,
-        _identity: ApiIdentity = Depends(require_permission("api:read")),
+        _identity: ApiIdentity = Depends(require_permission(PERM_READ)),
     ):
         try:
             return service.session_view(sid, nick)
@@ -100,7 +108,7 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def mark(
         sid: str,
         payload: MarkPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:write")),
+        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
         try:
             # mark_cell may write the scoreboard to Vault on a first win — offload
@@ -116,13 +124,13 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     # NB: must NOT be "/settings" — core reserves /api/plugins/{id}/settings for
     # its schema-driven settings system, which would shadow this router's route.
     @router.get("/prefs")
-    async def get_settings(_identity: ApiIdentity = Depends(require_permission("api:read"))):
+    async def get_settings(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
         return service.get_settings()
 
     @router.put("/prefs")
     async def put_settings(
         payload: SettingsPayload,
-        _identity: ApiIdentity = Depends(require_permission("api:write")),
+        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
         # set_scoreboard_enabled persists to Vault — offload the blocking call.
         return await asyncio.to_thread(service.set_scoreboard_enabled, payload.scoreboard_enabled)

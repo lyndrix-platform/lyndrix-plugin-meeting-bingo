@@ -50,6 +50,24 @@ manifest = ModuleManifest(
     ],
     settings_ui_route="/bingo/settings",
     permissions={"subscribe": ["vault:ready_for_data"], "emit": []},
+    # Identity & Permissions 2.0 role bundles. Permissions are fully qualified
+    # (plugin:lyndrix.plugin.bingo:api:*) rather than the bare global
+    # api:read/api:write, so granting a role only ever scopes access to this
+    # plugin.
+    roles=[
+        {"id": "viewer", "label": "Meeting Bingo Viewer",
+         "permissions": ["plugin:lyndrix.plugin.bingo:api:read"],
+         "auto_map_groups": [],
+         "description": "Read-only access to Meeting Bingo boards and games."},
+        {"id": "operator", "label": "Meeting Bingo Operator",
+         "permissions": ["plugin:lyndrix.plugin.bingo:api:read", "plugin:lyndrix.plugin.bingo:api:write"],
+         "auto_map_groups": [],
+         "description": "Play and manage Meeting Bingo games."},
+        {"id": "admin", "label": "Meeting Bingo Administrator",
+         "permissions": ["plugin:lyndrix.plugin.bingo:api:read", "plugin:lyndrix.plugin.bingo:api:write"],
+         "auto_map_groups": ["INT_ADMIN"],
+         "description": "Full control over the Meeting Bingo plugin."},
+    ],
 )
 
 
