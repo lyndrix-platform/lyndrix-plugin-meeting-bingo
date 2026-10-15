@@ -3,13 +3,17 @@
 All game state and rules live in ``app/logic/service.py``; the HTTP router in
 ``app/api.py`` exposes them and the React bundle (``app/ui/react``) is the sole
 front-end (``react_ui=True``). This module must stay logic-free wiring.
+
+Cluster-safe since 1.2.0: sessions, players, scoreboard and default terms live
+in the shared database; the Vault-backed ``scoreboard_enabled`` toggle is
+re-read on every instance via ``bingo:settings_changed`` (cluster bus).
 """
 import asyncio
 import time
 
-from core.api import ModuleManifest, PluginHealthStatus
+from core.api import ModuleManifest, PluginHealthStatus, db_instance
 
-from .app.logic.service import bingo_service
+from .app.logic.service import SETTINGS_TOPIC, bingo_service
 from .app.api import build_plugin_router
 
 # ==========================================
@@ -18,7 +22,7 @@ from .app.api import build_plugin_router
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="1.1.0",
+    version="1.2.0",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
@@ -49,7 +53,10 @@ manifest = ModuleManifest(
         },
     ],
     settings_ui_route="/bingo/settings",
-    permissions={"subscribe": ["vault:ready_for_data"], "emit": []},
+    permissions={
+        "subscribe": ["vault:ready_for_data", "db:connected", "plugin:settings_changed", SETTINGS_TOPIC],
+        "emit": [SETTINGS_TOPIC],
+    },
     # Identity & Permissions 2.0 role bundles. Permissions are fully qualified
     # (plugin:lyndrix.plugin.bingo:api:*) rather than the bare global
     # api:read/api:write, so granting a role only ever scopes access to this
@@ -74,6 +81,15 @@ manifest = ModuleManifest(
 # ==========================================
 # 2. SETUP / LIFECYCLE
 # ==========================================
+def _spawn(ctx, coro) -> None:
+    """Start background work via ctx.create_task (older cores: the running loop)."""
+    create_task = getattr(ctx, "create_task", None)
+    if callable(create_task):
+        create_task(coro, name="bingo:bootstrap")
+    else:
+        asyncio.get_running_loop().create_task(coro)
+
+
 def setup(ctx):
     ctx.log.info("STARTUP: Loading Meeting Bingo Plugin...")
 
@@ -82,15 +98,38 @@ def setup(ctx):
     bingo_service.bind(ctx)
     ctx.register_routes(build_plugin_router(bingo_service))
 
-    # Seed the default terms file (no-op if it already exists).
-    bingo_service.ensure_terms_file()
+    # db:connected / vault:ready_for_data usually fired BEFORE setup() (they
+    # trigger plugin activation), so bootstrap right away in the background:
+    # tables under the core's bootstrap lock, one-time legacy imports, toggle.
+    async def _initial_bootstrap():
+        if db_instance.is_connected:
+            await bingo_service.abootstrap()
+        await asyncio.to_thread(bingo_service.load_from_vault)
+
+    _spawn(ctx, _initial_bootstrap())
+
+    @ctx.subscribe("db:connected")
+    async def _on_db_connected(payload=None):
+        if await bingo_service.abootstrap():
+            await asyncio.to_thread(bingo_service.load_from_vault)
 
     @ctx.subscribe("vault:ready_for_data")
     async def load_data_from_vault(payload=None):
         ctx.log.info("LOAD: Vault ready. Fetching Bingo data...")
-        # load_from_vault performs synchronous hvac round-trips — offload it so
-        # the boot event loop is never blocked.
+        # Synchronous hvac/DB round-trips — offload so the loop is never blocked.
         await asyncio.to_thread(bingo_service.load_from_vault)
+
+    # A peer instance changed the toggle (our own emit has no _origin).
+    @ctx.subscribe(SETTINGS_TOPIC)
+    async def _on_peer_settings(payload=None):
+        if isinstance(payload, dict) and payload.get("_origin"):
+            await asyncio.to_thread(bingo_service.reload_settings)
+
+    # Core >= 1.5.1 (bridged to every instance): this plugin's settings were saved.
+    @ctx.subscribe("plugin:settings_changed")
+    async def _on_settings_saved(payload=None):
+        if isinstance(payload, dict) and payload.get("plugin_id") == manifest.id:
+            await asyncio.to_thread(bingo_service.reload_settings)
 
 
 # ==========================================
@@ -99,41 +138,39 @@ def setup(ctx):
 async def health(ctx) -> PluginHealthStatus:
     """Functional health probe.
 
-    Meeting Bingo holds no DB — its runtime is the in-memory game engine plus
-    the word catalog it deals boards from. So a meaningful probe checks exactly
-    that: the service is bound to a context, its game-state structure is intact,
-    and a non-empty term list is loadable (from disk, with a built-in fallback).
-    An engine that can't deal a board is broken even though ``setup()`` ran.
-    The disk read is offloaded to keep the event loop free.
+    The game state lives in the shared database, so the probe checks that the
+    service is bound, its tables are bootstrapped, the open sessions can be
+    counted (one cheap COUNT — cluster-wide, not just this instance) and a
+    term list is available to deal boards from (DB, built-in fallback).
+    Blocking reads are offloaded to keep the event loop free.
     """
     start = time.perf_counter()
 
     if getattr(bingo_service, "_ctx", None) is None:
         return PluginHealthStatus(status="error", details={"reason": "service_not_bound"})
 
-    state = getattr(bingo_service, "state", None)
-    required_keys = {"sessions", "scoreboard_enabled", "scoreboard"}
-    if not isinstance(state, dict) or not required_keys.issubset(state.keys()):
+    if not bingo_service.is_ready:
         return PluginHealthStatus(
-            status="error",
-            details={"reason": "state_corrupted", "state_keys": sorted(state.keys()) if isinstance(state, dict) else None},
+            status="degraded",
+            details={"reason": "database_not_ready"},
+            latency_ms=round((time.perf_counter() - start) * 1000, 1),
         )
 
     try:
         terms = await asyncio.to_thread(bingo_service.default_terms)
+        active_sessions = await asyncio.to_thread(bingo_service.count_open_sessions)
     except Exception as exc:
         return PluginHealthStatus(
             status="error",
-            details={"reason": "terms_unavailable", "error": str(exc)},
+            details={"reason": "query_failed", "error": str(exc)},
             latency_ms=round((time.perf_counter() - start) * 1000, 1),
         )
 
     latency = round((time.perf_counter() - start) * 1000, 1)
-    sessions = state.get("sessions") or {}
     details = {
         "terms_available": len(terms),
-        "active_sessions": len(sessions) if hasattr(sessions, "__len__") else 0,
-        "scoreboard_enabled": bool(state.get("scoreboard_enabled")),
+        "active_sessions": active_sessions,
+        "scoreboard_enabled": bool(bingo_service.state.get("scoreboard_enabled")),
     }
     # A standard bingo board needs 24 distinct terms (5x5 minus the free centre).
     if len(terms) < 24:

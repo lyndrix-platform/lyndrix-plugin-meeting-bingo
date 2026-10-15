@@ -7,8 +7,10 @@ A single router mounted by core at ``/api/plugins/lyndrix.plugin.bingo/`` via
 
 The React bundle (app/ui/react) polls ``/lobby`` and ``/sessions/{sid}`` for the
 real-time view and POSTs joins/marks. All endpoints delegate to the shared
-``BingoService`` so logic lives in one place. Vault-touching service calls are
-offloaded with ``asyncio.to_thread`` to keep the event loop responsive.
+``BingoService`` so logic lives in one place. Every service call touches the
+database and/or Vault, so all of them are offloaded with ``asyncio.to_thread``
+to keep the event loop responsive. While the database is unavailable the game
+routes answer 503.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from core.api import ApiIdentity, require_permission
 
-from .logic.service import BingoService
+from .logic.service import BingoService, BingoUnavailable
 
 # Plugin-scoped permission ids. Gating routes on the fully-qualified
 # plugin:<id>:api:* (rather than bare api:read/api:write) makes the manifest's
@@ -50,12 +52,15 @@ class SettingsPayload(BaseModel):
     scoreboard_enabled: bool
 
 
+def _unavailable(exc: BingoUnavailable) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5"})
+
+
 def build_plugin_router(service: BingoService) -> APIRouter:
     router = APIRouter(tags=["Meeting Bingo"])
 
     # ── Lobby / scoreboard ───────────────────────────────────────────────────
-    @router.get("/lobby")
-    async def lobby(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
+    def _lobby() -> dict:
         return {
             "sessions": service.list_sessions(),
             "scoreboard_enabled": service.state["scoreboard_enabled"],
@@ -63,18 +68,31 @@ def build_plugin_router(service: BingoService) -> APIRouter:
             "default_terms": service.default_terms(),
         }
 
+    @router.get("/lobby")
+    async def lobby(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
+        try:
+            return await asyncio.to_thread(_lobby)
+        except BingoUnavailable as exc:
+            raise _unavailable(exc) from exc
+
     @router.get("/scoreboard")
     async def scoreboard(_identity: ApiIdentity = Depends(require_permission(PERM_READ))):
-        return {"enabled": service.state["scoreboard_enabled"], "scores": service.scoreboard()}
+        scores = await asyncio.to_thread(service.scoreboard)
+        return {"enabled": service.state["scoreboard_enabled"], "scores": scores}
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     @router.post("/sessions")
     async def create_session(
         payload: CreateSessionPayload,
-        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
+        identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
         try:
-            sid = service.create_session(payload.name, payload.size, payload.terms)
+            sid = await asyncio.to_thread(
+                service.create_session, payload.name, payload.size, payload.terms,
+                getattr(identity, "username", None),
+            )
+        except BingoUnavailable as exc:
+            raise _unavailable(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"session_id": sid}
@@ -85,9 +103,14 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         payload: JoinPayload,
         _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
-        try:
+        def _join() -> dict:
             service.join_session(sid, payload.nick)
             return service.session_view(sid, payload.nick)
+
+        try:
+            return await asyncio.to_thread(_join)
+        except BingoUnavailable as exc:
+            raise _unavailable(exc) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Session nicht gefunden.") from exc
         except ValueError as exc:
@@ -100,7 +123,9 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         _identity: ApiIdentity = Depends(require_permission(PERM_READ)),
     ):
         try:
-            return service.session_view(sid, nick)
+            return await asyncio.to_thread(service.session_view, sid, nick)
+        except BingoUnavailable as exc:
+            raise _unavailable(exc) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Session nicht gefunden.") from exc
 
@@ -110,11 +135,14 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         payload: MarkPayload,
         _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
-        try:
-            # mark_cell may write the scoreboard to Vault on a first win — offload
-            # the whole call so the blocking Vault round-trip never stalls the loop.
-            result = await asyncio.to_thread(service.mark_cell, sid, payload.nick, payload.index)
+        def _mark() -> dict:
+            result = service.mark_cell(sid, payload.nick, payload.index)
             return {"result": result, "session": service.session_view(sid, payload.nick)}
+
+        try:
+            return await asyncio.to_thread(_mark)
+        except BingoUnavailable as exc:
+            raise _unavailable(exc) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Session/Spieler nicht gefunden.") from exc
         except ValueError as exc:
@@ -132,7 +160,8 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         payload: SettingsPayload,
         _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
-        # set_scoreboard_enabled persists to Vault — offload the blocking call.
-        return await asyncio.to_thread(service.set_scoreboard_enabled, payload.scoreboard_enabled)
+        # Persists to Vault off-loop, then announces the change cluster-wide so
+        # every instance re-reads it (bingo:settings_changed).
+        return await service.update_scoreboard_enabled(payload.scoreboard_enabled)
 
     return router
