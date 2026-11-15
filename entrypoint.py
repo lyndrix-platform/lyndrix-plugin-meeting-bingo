@@ -22,7 +22,7 @@ from .app.api import build_plugin_router
 manifest = ModuleManifest(
     id="lyndrix.plugin.bingo",
     name="Meeting Bingo",
-    version="1.2.0",
+    version="1.3.0",
     description="Multiplayer Bullshit-Bingo für langatmige Meetings.",
     author="Lyndrix",
     icon="grid_on",
