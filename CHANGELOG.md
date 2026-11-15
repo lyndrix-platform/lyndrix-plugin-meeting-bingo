@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+Proposed version: **1.3.0** (security audit 2026-11; the manifest version is not bumped yet). Minimum core unchanged;
+no React bundle rebuild needed.
+
+### Security
+- A player is bound to the authenticated user: new nullable column `bingo_players.owner` (added idempotently under the
+  bootstrap lock). One player per user and session; `nick` is only the display name at the first join (a taken nick is
+  400). Marks always apply to the caller's own board, a nick in the request is ignored. Players from before the upgrade
+  are claimed by the first authenticated join or mark that presents their nickname (MB-01).
+- Limits as settings (category *Limits*): `max_terms` 200, `max_term_length` 80, `max_sessions_per_user` 20,
+  `max_players_per_session` 50. Violations are 422 (terms) or 429 (quotas); static ceilings of 1000 terms and 500
+  characters (MB-02).
+
+### Changed
+- The scoreboard counts the authenticated username (scores stored under a nickname remain).
+- Idle sessions are removed by an hourly job under the lease `bingo:cleanup`, no longer by `create_session` (MB-03).
+
 ## [1.2.0] - 2026-10-15
 ### Changed
 - Cluster readiness: game sessions and players moved from process memory into the
