@@ -251,12 +251,6 @@ def test_idle_sessions_closed_then_purged(db):
         assert s.scalars(select(BingoPlayer)).all() == []
 
 
-def test_cleanup_is_leader_only(db):
-    standby = _pod(leader=False)
-    standby.maybe_cleanup()
-    assert standby._last_cleanup == 0.0
-
-
 def test_without_db_game_routes_are_unavailable(monkeypatch):
     monkeypatch.setattr(database, "db_instance",
                         SimpleNamespace(engine=None, SessionLocal=None, is_connected=False))

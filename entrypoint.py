@@ -13,7 +13,7 @@ import time
 
 from core.api import ModuleManifest, PluginHealthStatus, db_instance
 
-from .app.logic.service import SETTINGS_TOPIC, bingo_service
+from .app.logic.service import DEFAULT_LIMITS, SETTINGS_TOPIC, bingo_service
 from .app.api import build_plugin_router
 
 # ==========================================
@@ -53,6 +53,22 @@ manifest = ModuleManifest(
         },
     ],
     settings_ui_route="/bingo/settings",
+    # Size limits against bloat/lobby flooding by ordinary users (MB-02). The
+    # scoreboard toggle keeps its own React settings page (/prefs).
+    settings_schema=[
+        {"key": "max_terms", "label": "Max. terms per session", "kind": "int",
+         "category": "Limits", "default": str(DEFAULT_LIMITS["max_terms"]),
+         "description": "Sessions with more terms are rejected (HTTP 422)."},
+        {"key": "max_term_length", "label": "Max. characters per term", "kind": "int",
+         "category": "Limits", "default": str(DEFAULT_LIMITS["max_term_length"]),
+         "description": "Longer terms are rejected (HTTP 422)."},
+        {"key": "max_sessions_per_user", "label": "Max. open sessions per user", "kind": "int",
+         "category": "Limits", "default": str(DEFAULT_LIMITS["max_sessions_per_user"]),
+         "description": "A user at the limit gets HTTP 429 until a session closes (24 h idle)."},
+        {"key": "max_players_per_session", "label": "Max. players per session", "kind": "int",
+         "category": "Limits", "default": str(DEFAULT_LIMITS["max_players_per_session"]),
+         "description": "Joining a full session is answered with HTTP 429."},
+    ],
     permissions={
         "subscribe": ["vault:ready_for_data", "db:connected", "plugin:settings_changed", SETTINGS_TOPIC],
         "emit": [SETTINGS_TOPIC],
@@ -108,6 +124,14 @@ def setup(ctx):
 
     _spawn(ctx, _initial_bootstrap())
 
+    # Idle-session cleanup on exactly one instance, independent of requests
+    # (MB-03). Older cores without leases: single instance, run it directly.
+    on_lease = getattr(ctx, "on_lease", None)
+    if callable(on_lease):
+        on_lease("bingo:cleanup", acquired=bingo_service.start_cleanup, lost=bingo_service.stop_cleanup)
+    else:
+        _spawn(ctx, bingo_service.start_cleanup())
+
     @ctx.subscribe("db:connected")
     async def _on_db_connected(payload=None):
         if await bingo_service.abootstrap():
@@ -130,6 +154,10 @@ def setup(ctx):
     async def _on_settings_saved(payload=None):
         if isinstance(payload, dict) and payload.get("plugin_id") == manifest.id:
             await asyncio.to_thread(bingo_service.reload_settings)
+
+
+async def teardown(ctx):
+    await bingo_service.stop_cleanup()
 
 
 # ==========================================

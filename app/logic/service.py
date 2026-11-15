@@ -49,11 +49,22 @@ _CFG_SCOREBOARD_IMPORTED = "scoreboard_imported"
 
 _TERMS_CACHE_TTL = 60.0
 # Open sessions without any activity for this long drop out of the lobby, and
-# closed ones are deleted after the purge window (leader only, at most hourly).
+# closed ones are deleted after the purge window (leased hourly job, see start_cleanup).
 SESSION_IDLE_HOURS = 24
 SESSION_PURGE_DAYS = 30
 _CLEANUP_INTERVAL = 3600.0
+_CLEANUP_FIRST_DELAY = 30.0
 _MARK_ATTEMPTS = 5
+
+# Input limits (MB-02). Operator settings (manifest settings_schema) override
+# these defaults; they exist so any ordinary user cannot bloat the DB or flood
+# the lobby that every client polls.
+DEFAULT_LIMITS: Dict[str, int] = {
+    "max_terms": 200,
+    "max_term_length": 80,
+    "max_sessions_per_user": 20,
+    "max_players_per_session": 50,
+}
 
 DEFAULT_TERMS: List[str] = [
     "Synergieeffekte", "Wir müssen das agil angehen", "Könnt ihr mich hören?",
@@ -78,6 +89,14 @@ SARCASTIC_MESSAGES: List[str] = [
 
 class BingoUnavailable(RuntimeError):
     """The database is not (yet) available — the API answers 503."""
+
+
+class InvalidInput(ValueError):
+    """Input over a configured size limit (HTTP 422)."""
+
+
+class QuotaExceeded(ValueError):
+    """A per-user / per-session quota is used up (HTTP 429)."""
 
 
 class _StaleBoard(Exception):
@@ -114,7 +133,8 @@ class BingoService:
         self._ctx = None
         self._ready = False
         self._terms_cache: Optional[tuple[List[str], float]] = None
-        self._last_cleanup = 0.0
+        self.limits: Dict[str, int] = dict(DEFAULT_LIMITS)
+        self._cleanup_task: Optional[asyncio.Task] = None
 
     def bind(self, ctx) -> None:
         self._ctx = ctx
@@ -243,9 +263,23 @@ class BingoService:
         """
         if self._ctx is None:
             return
+        self.reload_limits()
         raw = self._ctx.get_secret("scoreboard_enabled")
         if raw is not None:
             self.state["scoreboard_enabled"] = raw in (True, "True")
+
+    def reload_limits(self) -> None:
+        """Re-read the size limits from the operator settings (older cores
+        without ``ctx.get_setting`` keep the defaults)."""
+        get_setting = getattr(self._ctx, "get_setting", None)
+        if not callable(get_setting):
+            return
+        for key, default in DEFAULT_LIMITS.items():
+            try:
+                value = int(get_setting(key, default))
+            except (TypeError, ValueError):
+                value = default
+            self.limits[key] = value if value >= 1 else default
 
     def set_scoreboard_enabled(self, enabled: bool) -> Dict[str, Any]:
         self.state["scoreboard_enabled"] = bool(enabled)
@@ -349,12 +383,27 @@ class BingoService:
             raise ValueError("Feldgröße muss zwischen 3 und 5 liegen.")
         if len(terms) < size * size:
             raise ValueError(f"Du brauchst mindestens {size * size} Begriffe.")
+        max_terms, max_len = self.limits["max_terms"], self.limits["max_term_length"]
+        if len(terms) > max_terms:
+            raise InvalidInput(f"Höchstens {max_terms} Begriffe pro Session erlaubt.")
+        if any(len(t) > max_len for t in terms):
+            raise InvalidInput(f"Ein Begriff darf höchstens {max_len} Zeichen lang sein.")
         self._require_db()
         sid = str(uuid4())[:8]
+        max_sessions = self.limits["max_sessions_per_user"]
 
         def _insert() -> None:
             now = _utcnow()
             with get_session() as s:
+                if created_by:
+                    open_own = int(s.scalar(
+                        select(func.count()).select_from(BingoSession)
+                        .where(BingoSession.status == "open", BingoSession.created_by == created_by)
+                    ) or 0)
+                    if open_own >= max_sessions:
+                        raise QuotaExceeded(
+                            f"Du hast bereits {open_own} offene Sessions (Maximum {max_sessions})."
+                        )
                 s.add(BingoSession(
                     id=sid, name=name[:255], size=size, terms=terms, status="open",
                     created_by=created_by, created_at=now, last_update=now,
@@ -362,48 +411,122 @@ class BingoService:
                 s.commit()
 
         retry_write(_insert)
-        self.maybe_cleanup()
         return sid
 
-    def join_session(self, sid: str, nick: str) -> None:
+    def join_session(self, sid: str, nick: str, owner: Optional[str] = None) -> str:
+        """Join (idempotent) and return the player's name in the session.
+
+        ``owner`` is the authenticated user (MB-01): a user has at most one
+        player per session, ``nick`` is only its display name for the first
+        join and is ignored afterwards. Without ``owner`` (internal/legacy
+        callers) the nickname alone identifies the player.
+        """
         nick = (nick or "").strip()
         if not nick:
             raise ValueError("Nickname fehlt.")
         self._require_db()
+        max_players = self.limits["max_players_per_session"]
 
-        def _join() -> None:
+        def _join() -> str:
             with get_session() as s:
                 sess = s.get(BingoSession, sid)
                 if sess is None:
                     raise KeyError(sid)
-                if s.get(BingoPlayer, {"session_id": sid, "name": nick}) is not None:
-                    return
+                if owner is not None:
+                    mine = s.scalars(
+                        select(BingoPlayer).where(BingoPlayer.session_id == sid, BingoPlayer.owner == owner)
+                        .order_by(BingoPlayer.joined_at, BingoPlayer.name)
+                    ).first()
+                    if mine is not None:
+                        return mine.name
+                same = s.get(BingoPlayer, {"session_id": sid, "name": nick})
+                if same is not None:
+                    if owner is None or same.owner == owner:
+                        return nick
+                    if same.owner is None:
+                        # Player stored before owners existed: its nickname
+                        # holder claims it (conditional, so only one user wins).
+                        claimed = s.execute(
+                            update(BingoPlayer)
+                            .where(BingoPlayer.session_id == sid, BingoPlayer.name == nick,
+                                   BingoPlayer.owner.is_(None))
+                            .values(owner=owner).execution_options(synchronize_session=False)
+                        ).rowcount
+                        s.commit()
+                        if claimed:
+                            return nick
+                    raise ValueError("Dieser Nickname ist in der Session bereits vergeben.")
+                count = int(s.scalar(
+                    select(func.count()).select_from(BingoPlayer).where(BingoPlayer.session_id == sid)
+                ) or 0)
+                if count >= max_players:
+                    raise QuotaExceeded(f"Die Session ist voll (Maximum {max_players} Spieler).")
                 n = sess.size * sess.size
                 now = _utcnow()
                 s.add(BingoPlayer(
-                    session_id=sid, name=nick, board=random.sample(list(sess.terms), n),
+                    session_id=sid, name=nick, owner=owner, board=random.sample(list(sess.terms), n),
                     marks=[False] * n, won=False, joined_at=now, updated_at=now, version=0,
                 ))
                 s.commit()
+                return nick
 
         try:
-            retry_write(_join)
+            return retry_write(_join)
         except IntegrityError:
-            pass  # the same nick joined concurrently (other instance / double click)
+            # The same nickname joined concurrently (other instance / double
+            # click): re-run, which now sees the row and decides by its owner.
+            return retry_write(_join)
 
-    def mark_cell(self, sid: str, nick: str, index: int) -> Dict[str, Any]:
+    def _player_name(self, s, sid: str, nick: str, owner: Optional[str]) -> str:
+        """The name of the player *owner* controls in session *sid* (MB-01).
+
+        With an owner the nickname given by the client is irrelevant: the player
+        is the one stored for that user. A player from before owners existed
+        (``owner IS NULL``) is claimed by the first authenticated user who
+        presents its nickname. Raises ``KeyError`` when the user has no player.
+        """
+        if owner is None:
+            return nick
+        mine = s.scalars(
+            select(BingoPlayer.name).where(BingoPlayer.session_id == sid, BingoPlayer.owner == owner)
+            .order_by(BingoPlayer.joined_at, BingoPlayer.name)
+        ).first()
+        if mine is not None:
+            return mine
+        legacy = s.get(BingoPlayer, {"session_id": sid, "name": nick})
+        if legacy is not None and legacy.owner is None:
+            s.execute(
+                update(BingoPlayer)
+                .where(BingoPlayer.session_id == sid, BingoPlayer.name == nick, BingoPlayer.owner.is_(None))
+                .values(owner=owner).execution_options(synchronize_session=False)
+            )
+            s.commit()
+            again = s.scalars(
+                select(BingoPlayer.name).where(BingoPlayer.session_id == sid, BingoPlayer.owner == owner)
+            ).first()
+            if again is not None:
+                return again
+        raise KeyError(nick)
+
+    def mark_cell(
+        self, sid: str, nick: str, index: int, owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Toggle a cell; on a fresh bingo, record the win + scoreboard.
 
-        Returns {won, first_winner, sarcastic} so the UI can fire confetti/toast.
+        With ``owner`` (the authenticated user) the marked board is always that
+        user's own, whatever ``nick`` says (MB-01). Returns {won, first_winner,
+        sarcastic} so the UI can fire confetti/toast.
         """
         self._require_db()
         result: Dict[str, Any] = {"won": False, "first_winner": False, "sarcastic": None}
+        names: Dict[str, str] = {}
 
         def _toggle() -> str:
             with get_session() as s:
                 sess = s.get(BingoSession, sid)
                 if sess is None:
                     raise KeyError(sid)
+                nick = names["player"] = self._player_name(s, sid, names["requested"], owner)
                 player = s.get(BingoPlayer, {"session_id": sid, "name": nick})
                 if player is None:
                     raise KeyError(nick)
@@ -434,6 +557,7 @@ class BingoService:
                 s.commit()
                 return "won" if won else "marked"
 
+        names["requested"] = nick
         outcome = "marked"
         for attempt in range(_MARK_ATTEMPTS):
             try:
@@ -451,14 +575,15 @@ class BingoService:
             return result
 
         result["won"] = True
-        if self._claim_first_win(sid, nick):
+        if self._claim_first_win(sid, names["player"], owner):
             result["first_winner"] = True
         else:
             result["sarcastic"] = random.choice(SARCASTIC_MESSAGES)
         return result
 
-    def _claim_first_win(self, sid: str, nick: str) -> bool:
-        """Award the session's first win at most once, cluster-wide."""
+    def _claim_first_win(self, sid: str, nick: str, owner: Optional[str] = None) -> bool:
+        """Award the session's first win at most once, cluster-wide. The
+        scoreboard counts per authenticated user (``owner``), not per nickname."""
         award_score = bool(self.state["scoreboard_enabled"])
 
         def _claim() -> bool:
@@ -471,7 +596,7 @@ class BingoService:
                 )
                 first = res.rowcount == 1
                 if first and award_score:
-                    self._increment_score(s, nick)
+                    self._increment_score(s, (owner or nick)[:64])
                 s.commit()
                 return first
 
@@ -482,7 +607,10 @@ class BingoService:
             # rolled-back claim is still unclaimed, so retry once as an UPDATE.
             return retry_write(_claim)
 
-    def session_view(self, sid: str, nick: str) -> Dict[str, Any]:
+    def session_view(self, sid: str, nick: str, owner: Optional[str] = None) -> Dict[str, Any]:
+        """The board view for one user. With ``owner`` "you" is the player stored
+        for that user; a player from before owners existed stays readable by its
+        nickname. Owners are never part of the view."""
         self._require_db()
         with get_session() as s:
             sess = s.get(BingoSession, sid)
@@ -496,7 +624,8 @@ class BingoService:
                 .order_by(BingoPlayer.joined_at, BingoPlayer.name)
             ).scalars().all()
             rows = [
-                {"name": p.name, "board": _cells(p.board, p.marks), "won": bool(p.won), "won_at": p.won_at}
+                {"name": p.name, "board": _cells(p.board, p.marks), "won": bool(p.won), "won_at": p.won_at,
+                 "owner": p.owner}
                 for p in players
             ]
             name = sess.name
@@ -508,10 +637,14 @@ class BingoService:
         )
         winners = ([first] if first else []) + [r["name"] for r in later]
 
-        you = next((r for r in rows if r["name"] == nick), None)
+        if owner is None:
+            you = next((r for r in rows if r["name"] == nick), None)
+        else:
+            you = next((r for r in rows if r["owner"] == owner), None) or next(
+                (r for r in rows if r["name"] == nick and r["owner"] is None), None)
         others: List[Dict[str, Any]] = []
         for r in rows:
-            if r["name"] == nick:
+            if you is not None and r["name"] == you["name"]:
                 continue
             others.append({
                 "nick": r["name"],
@@ -526,7 +659,7 @@ class BingoService:
             "name": name,
             "size": size,
             "you": {
-                "nick": nick,
+                "nick": you["name"] if you else nick,
                 "board": you["board"] if you else None,
                 "won": you["won"] if you else False,
                 "joined": you is not None,
@@ -537,17 +670,39 @@ class BingoService:
         }
 
     # ── Housekeeping ─────────────────────────────────────────────────────────
-    def maybe_cleanup(self) -> None:
-        """Leader-only, throttled session cleanup piggy-backed on writes."""
-        if time.monotonic() - self._last_cleanup < _CLEANUP_INTERVAL:
+    async def start_cleanup(self) -> None:
+        """``on_lease("bingo:cleanup")`` acquired (or single instance): sweep
+        sessions periodically, independent of any request (MB-03)."""
+        if self._cleanup_task is not None and not self._cleanup_task.done():
             return
-        if not getattr(self._ctx, "is_leader", True):  # single mode / older core: True
-            return
-        self._last_cleanup = time.monotonic()
-        try:
-            self.cleanup_sessions()
-        except Exception as exc:
-            log.warning(f"Bingo: session cleanup failed ({exc!s:.160})")
+        create_task = getattr(self._ctx, "create_task", None) or asyncio.get_running_loop().create_task
+        self._cleanup_task = create_task(self._cleanup_loop(), name="bingo:cleanup")
+
+    async def stop_cleanup(self) -> None:
+        """Lease lost / plugin unloaded: stop sweeping on this instance."""
+        task, self._cleanup_task = self._cleanup_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - we only wait for it to end
+                pass
+
+    async def _cleanup_loop(self) -> None:
+        delay = _CLEANUP_FIRST_DELAY
+        while True:
+            await asyncio.sleep(delay)
+            delay = _CLEANUP_INTERVAL
+            if not self.is_ready:
+                continue
+            try:
+                done = await asyncio.to_thread(self.cleanup_sessions)
+                if done["closed"] or done["purged"]:
+                    log.info(f"Bingo: cleanup closed {done['closed']} and purged {done['purged']} session(s)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one failed sweep never ends the job
+                log.warning(f"Bingo: session cleanup failed ({exc!s:.160})")
 
     def cleanup_sessions(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Close sessions idle for SESSION_IDLE_HOURS, delete closed ones after

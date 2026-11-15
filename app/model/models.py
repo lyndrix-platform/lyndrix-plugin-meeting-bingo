@@ -31,7 +31,11 @@ class BingoPlayer(_Base):
 
     # (session_id, name) is the primary key and therefore unique.
     session_id = Column(String(16), primary_key=True)
-    name = Column(String(64), primary_key=True)
+    name = Column(String(64), primary_key=True)   # display nickname
+    # Authenticated user the player belongs to (MB-01). NULL for players stored
+    # before 1.3: they stay readable and are claimed by their first authenticated
+    # mark/join.
+    owner = Column(String(255), nullable=True)
     board = Column(JSON, nullable=False)              # list[str], row-major
     marks = Column(JSON, nullable=False)              # list[bool], same order
     won = Column(Boolean, nullable=False, default=False)

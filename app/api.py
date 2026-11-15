@@ -15,14 +15,14 @@ routes answer 503.
 from __future__ import annotations
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.api import ApiIdentity, require_permission
 
-from .logic.service import BingoService, BingoUnavailable
+from .logic.service import BingoService, BingoUnavailable, InvalidInput, QuotaExceeded
 
 # Plugin-scoped permission ids. Gating routes on the fully-qualified
 # plugin:<id>:api:* (rather than bare api:read/api:write) makes the manifest's
@@ -33,23 +33,54 @@ PERM_READ = f"plugin:{PLUGIN_ID}:api:read"
 PERM_WRITE = f"plugin:{PLUGIN_ID}:api:write"
 
 
+# Hard ceilings that reject absurd bodies before any work; the operator-tunable
+# limits (service.limits, settings max_terms/max_term_length/...) apply below them.
+_HARD_MAX_TERMS = 1000
+_HARD_MAX_TERM_LENGTH = 500
+
+
 class CreateSessionPayload(BaseModel):
-    name: str
+    name: str = Field(max_length=255)
     size: int = 3
-    terms: List[str] = Field(default_factory=list)
+    terms: List[str] = Field(default_factory=list, max_length=_HARD_MAX_TERMS)
+
+    @field_validator("terms")
+    @classmethod
+    def _term_length(cls, terms: List[str]) -> List[str]:
+        if any(len(t) > _HARD_MAX_TERM_LENGTH for t in terms):
+            raise ValueError(f"a term may have at most {_HARD_MAX_TERM_LENGTH} characters")
+        return terms
 
 
 class JoinPayload(BaseModel):
+    """``nick`` is only the display name; the player is bound to the caller."""
+
     nick: str = Field(min_length=1, max_length=40)
 
 
 class MarkPayload(BaseModel):
-    nick: str = Field(min_length=1, max_length=40)
+    # Accepted for older clients but ignored: the board marked is always the
+    # caller's own (MB-01).
+    nick: Optional[str] = Field(default=None, max_length=40)
     index: int
 
 
 class SettingsPayload(BaseModel):
     scoreboard_enabled: bool
+
+
+def _limit_error(exc: ValueError) -> Optional[HTTPException]:
+    """422 for input over a size limit, 429 for an exhausted quota, else None."""
+    if isinstance(exc, InvalidInput):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, QuotaExceeded):
+        return HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "60"})
+    return None
+
+
+def _user(identity: ApiIdentity) -> str:
+    """The authenticated user all game actions are attributed to (MB-01)."""
+    return getattr(identity, "username", None) or "system"
 
 
 def _unavailable(exc: BingoUnavailable) -> HTTPException:
@@ -89,23 +120,25 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         try:
             sid = await asyncio.to_thread(
                 service.create_session, payload.name, payload.size, payload.terms,
-                getattr(identity, "username", None),
+                _user(identity),
             )
         except BingoUnavailable as exc:
             raise _unavailable(exc) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise (_limit_error(exc) or HTTPException(status_code=400, detail=str(exc))) from exc
         return {"session_id": sid}
 
     @router.post("/sessions/{sid}/join")
     async def join(
         sid: str,
         payload: JoinPayload,
-        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
+        identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
+        user = _user(identity)
+
         def _join() -> dict:
-            service.join_session(sid, payload.nick)
-            return service.session_view(sid, payload.nick)
+            name = service.join_session(sid, payload.nick, owner=user)
+            return service.session_view(sid, name, owner=user)
 
         try:
             return await asyncio.to_thread(_join)
@@ -114,16 +147,16 @@ def build_plugin_router(service: BingoService) -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Session nicht gefunden.") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise (_limit_error(exc) or HTTPException(status_code=400, detail=str(exc))) from exc
 
     @router.get("/sessions/{sid}")
     async def get_session(
         sid: str,
-        nick: str,
-        _identity: ApiIdentity = Depends(require_permission(PERM_READ)),
+        nick: str = "",
+        identity: ApiIdentity = Depends(require_permission(PERM_READ)),
     ):
         try:
-            return await asyncio.to_thread(service.session_view, sid, nick)
+            return await asyncio.to_thread(service.session_view, sid, nick, _user(identity))
         except BingoUnavailable as exc:
             raise _unavailable(exc) from exc
         except KeyError as exc:
@@ -133,11 +166,13 @@ def build_plugin_router(service: BingoService) -> APIRouter:
     async def mark(
         sid: str,
         payload: MarkPayload,
-        _identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
+        identity: ApiIdentity = Depends(require_permission(PERM_WRITE)),
     ):
+        user = _user(identity)
+
         def _mark() -> dict:
-            result = service.mark_cell(sid, payload.nick, payload.index)
-            return {"result": result, "session": service.session_view(sid, payload.nick)}
+            result = service.mark_cell(sid, payload.nick or "", payload.index, owner=user)
+            return {"result": result, "session": service.session_view(sid, payload.nick or "", user)}
 
         try:
             return await asyncio.to_thread(_mark)
