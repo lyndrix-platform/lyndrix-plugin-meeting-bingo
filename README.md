@@ -1,6 +1,6 @@
 # Lyndrix Meeting Bingo Plugin
 
-**Version:** 0.1.3  
+**Version:** 1.3.0  
 **Autor:** Lyndrix
 
 Ein Multiplayer Bullshit-Bingo Plugin, das nahtlos in die Lyndrix-Plattform integriert ist. Perfekt, um langatmige Meetings mit etwas Gamification aufzulockern.
