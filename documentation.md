@@ -1,133 +1,142 @@
-# Meeting Bingo — Dokumentation
+# Meeting Bingo — Documentation
 
-## Übersicht
+## Overview
 
-Meeting Bingo ist ein Multiplayer-„Bullshit-Bingo"-Spiel für langatmige Meetings. Spieler treten einem Raum bei, erhalten eine zufällig generierte Bingo-Karte mit Buzzwords und können diese während des Meetings abhaken. Das Plugin dient gleichzeitig als Referenzimplementierung, die zeigt, dass Lyndrix für jeden Anwendungsfall geeignet ist — von ernsthafter Infrastruktur bis hin zu Spielen.
+Meeting Bingo is a multiplayer "bullshit bingo" game for long-winded meetings. Players join a room, receive a randomly generated bingo card with buzzwords, and can tick them off during the meeting. At the same time, the plugin serves as a reference implementation that shows that Lyndrix is suitable for every use case — from serious infrastructure to games.
 
-Die gesamte Benutzeroberfläche ist als React-Frontend umgesetzt (`react_ui=True`). Es gibt keine NiceGUI-Seite. Seit 1.2.0 liegt der gesamte Spielzustand (Räume, Spieler, Karten, Bestenliste, Standard-Begriffe) in der gemeinsamen Datenbank — das Plugin läuft damit auch im Cluster-Betrieb (mehrere Core-Instanzen hinter einem Load-Balancer). Nur der Schalter `scoreboard_enabled` liegt in Vault.
+The entire user interface is implemented as a React frontend (`react_ui=True`). There is no NiceGUI page. Since 1.2.0, the entire game state (rooms, players, cards, leaderboard, default terms) lives in the shared database — the plugin therefore also runs in cluster mode (multiple core instances behind a load balancer). Only the `scoreboard_enabled` toggle lives in Vault.
 
 ---
 
-## Architektur
+## Architecture
 
 ```
 lyndrix-plugin-meeting-bingo/
-├── entrypoint.py              # Manifest + Lifecycle-Hooks
+├── entrypoint.py              # Manifest + lifecycle hooks
 ├── locales/
-│   └── bingo.<locale>.json   # i18n-Übersetzungen (Namespace: bingo)
+│   └── bingo.<locale>.json   # i18n translations (namespace: bingo)
 ├── tests/                     # pytest (SQLite in-memory)
 └── app/
-    ├── api.py                 # FastAPI-Router (Lobby, Räume, Markieren, Einstellungen)
+    ├── api.py                 # FastAPI router (lobby, rooms, marking, settings)
     ├── model/
-    │   ├── models.py          # Tabellen bingo_sessions, bingo_players, bingo_scores, bingo_config
-    │   └── database.py        # DDL unter Bootstrap-Lock, READ-COMMITTED-Sessions, Retry
+    │   ├── models.py          # Tables bingo_sessions, bingo_players, bingo_scores, bingo_config
+    │   └── database.py        # DDL under bootstrap lock, READ-COMMITTED sessions, retry
     ├── logic/
-    │   └── service.py         # BingoService: Raumverwaltung, Karten-Generierung, Spielregeln
+    │   └── service.py         # BingoService: room management, card generation, game rules
     └── ui/
-        └── react/             # React-Frontend (einzige UI; Vite-Bundle)
+        └── react/             # React frontend (only UI; Vite bundle)
 ```
 
-**`BingoService`** liest und schreibt alle Räume über die Datenbank, sodass jede Instanz dieselbe Lobby und dieselben Karten sieht.
+**`BingoService`** reads and writes all rooms via the database, so that every instance sees the same lobby and the same cards.
 
-| Tabelle | Inhalt |
+| Table | Content |
 |---|---|
-| `bingo_sessions` | Raum: `id`, `name`, `size`, `terms` (JSON), `status` (`open`/`closed`), `created_by`, `created_at`, `last_update`, `winner` (erster Gewinner) |
-| `bingo_players` | Spieler je Raum, PK (`session_id`, `name`): `board` (JSON), `marks` (JSON), `won`, `won_at`, `joined_at`, `version` |
-| `bingo_scores` | Bestenliste: `player` (PK), `wins` |
-| `bingo_config` | Standard-Begriffe und Marker für Einmal-Importe |
+| `bingo_sessions` | Room: `id`, `name`, `size`, `terms` (JSON), `status` (`open`/`closed`), `created_by`, `created_at`, `last_update`, `winner` (first winner) |
+| `bingo_players` | Players per room, PK (`session_id`, `name`): `owner` (authenticated user, since 1.3.0, nullable), `board` (JSON), `marks` (JSON), `won`, `won_at`, `joined_at`, `version` |
+| `bingo_scores` | Leaderboard: `player` (PK), `wins` |
+| `bingo_config` | Default terms and markers for one-time imports |
 
-Cluster-Regeln:
+Cluster rules:
 
-- Tabellen werden idempotent unter dem Core-Lock `lyndrix_bootstrap` angelegt — beim Setup (falls die DB schon verbunden ist) und bei jedem `db:connected`.
-- Schreibzugriffe sind kurze READ-COMMITTED-Transaktionen mit Retry bei MariaDB 1020/1205/1213. Ein Markieren gilt nur für die gelesene Kartenversion (optimistisches Locking).
-- Der erste Gewinner wird per `UPDATE … WHERE winner IS NULL` vergeben — zwei Instanzen können ihn nie doppelt vergeben. Der Bestenlisten-Zähler steigt atomar (`wins = wins + 1`).
-- Räume ohne Aktivität seit 24 h werden geschlossen (verschwinden aus der Lobby) und nach 30 Tagen gelöscht — nur durch die Leader-Instanz, höchstens stündlich.
-- Einmal-Importe: die alte Vault-Bestenliste (`bingo_scoreboard`) und eine geänderte `terms.txt` werden einmalig in die DB übernommen. Ohne gespeicherte Begriffe gilt die eingebaute Liste `DEFAULT_TERMS`.
+- Tables are created idempotently under the core lock `lyndrix_bootstrap`; missing nullable columns of older versions (e.g. `bingo_players.owner`) are added via `ALTER TABLE` — during setup (if the DB is already connected) and on every `db:connected`.
+- Write accesses are short READ-COMMITTED transactions with retry on MariaDB 1020/1205/1213. A mark applies only to the card version that was read (optimistic locking).
+- The first winner is assigned via `UPDATE … WHERE winner IS NULL` — two instances can never assign it twice. The leaderboard counter increases atomically (`wins = wins + 1`).
+- Rooms without activity for 24 h are closed (disappear from the lobby) and deleted after 30 days — by an hourly job under the lease `bingo:cleanup` (exactly one instance, independent of requests; since 1.3.0 no longer triggered by `create_session`).
+- One-time imports: the old Vault leaderboard (`bingo_scoreboard`) and a modified `terms.txt` are imported into the DB once. Without stored terms, the built-in list `DEFAULT_TERMS` applies.
 
-Der React-Client lädt die komplette Spiellogik über die REST-API; im Frontend findet keinerlei Geschäftslogik statt.
+The React client loads the complete game logic via the REST API; there is no business logic at all in the frontend.
 
 ---
 
-## API-Referenz
+## API Reference
 
-Alle Routen sind unter `/api/plugins/lyndrix.plugin.bingo/` erreichbar und erfordern eine gültige Authentifizierung.
+All routes are reachable under `/api/plugins/lyndrix.plugin.bingo/` and require valid authentication.
 
-| Methode | Pfad | Beschreibung |
+| Method | Path | Description |
 |---|---|---|
-| `GET` | `/lobby` | Offene Räume, Bestenliste, Standard-Begriffe |
-| `GET` | `/scoreboard` | Bestenliste |
-| `POST` | `/sessions` | Neuen Raum erstellen (`name`, `size`, `terms`) |
-| `POST` | `/sessions/{sid}/join` | Raum beitreten (`nick`) |
-| `GET` | `/sessions/{sid}?nick=` | Spielzustand aus Sicht eines Spielers |
-| `POST` | `/sessions/{sid}/mark` | Feld umschalten (`nick`, `index`) |
-| `GET`/`PUT` | `/prefs` | Schalter `scoreboard_enabled` |
+| `GET` | `/lobby` | Open rooms, leaderboard, default terms |
+| `GET` | `/scoreboard` | Leaderboard |
+| `POST` | `/sessions` | Create a new room (`name`, `size`, `terms`); `422` when term limits are exceeded, `429` when the quota is exhausted |
+| `POST` | `/sessions/{sid}/join` | Join a room (`nick` = display name only; the player is bound to the authenticated user, nick already taken → `400`, full lobby → `429`) |
+| `GET` | `/sessions/{sid}?nick=` | Game state from the perspective of the authenticated user (`nick` optional) |
+| `POST` | `/sessions/{sid}/mark` | Toggle a field (`index`); always marks the own card, a passed `nick` is ignored |
+| `GET`/`PUT` | `/prefs` | Toggle `scoreboard_enabled` |
 
-Solange die Datenbank nicht verfügbar ist, antworten die Spiel-Routen mit `503` (`Retry-After: 5`).
+As long as the database is unavailable, the game routes respond with `503` (`Retry-After: 5`).
+
+Since 1.3.0, every player is bound to the authenticated user (new column `bingo_players.owner`): one player per user and room. Players from older versions are taken over by the first authenticated join/mark that specifies their nick. The leaderboard counts the authenticated username (existing nick entries are preserved).
+
+Size/quota violations: `422` (terms), `429` (quotas, with `Retry-After`). Static upper limits: 1000 terms, 500 characters per term.
 
 ---
 
 ## Events
 
-Die Spielkommunikation läuft über die REST-API. Der Bus dient nur dem Abgleich der Einstellungen zwischen Instanzen.
+Game communication runs via the REST API. The bus is only used to synchronize settings between instances.
 
-| Richtung | Topic | Beschreibung |
+| Direction | Topic | Description |
 |---|---|---|
-| subscribe | `vault:ready_for_data` | `scoreboard_enabled` laden, Einmal-Import der alten Bestenliste |
-| subscribe | `db:connected` | Tabellen anlegen (idempotent) |
-| emit + subscribe | `bingo:settings_changed` | Nach `PUT /prefs` clusterweit (`cluster=True`); Instanzen mit `_origin` lesen den Schalter neu |
-| subscribe | `plugin:settings_changed` | Core meldet gespeicherte Plugin-Einstellungen → Schalter neu lesen |
+| subscribe | `vault:ready_for_data` | Load `scoreboard_enabled`, one-time import of the old leaderboard |
+| subscribe | `db:connected` | Create tables (idempotent) |
+| Lease | `bingo:cleanup` | Hourly cleanup of inactive rooms on exactly one instance (`ctx.on_lease`; older cores without leases: directly) |
+| emit + subscribe | `bingo:settings_changed` | After `PUT /prefs` cluster-wide (`cluster=True`); instances with `_origin` re-read the toggle |
+| subscribe | `plugin:settings_changed` | Core reports saved plugin settings → re-read the toggle |
 
 ---
 
-## Konfiguration & Einstellungen
+## Configuration & Settings
 
-| Einstellung | Beschreibung | Zugriff |
+| Setting | Description | Access |
 |---|---|---|
-| Bestenliste aktiv | Zählt erste Siege je Spieler | `PUT /prefs` (`scoreboard_enabled`, Vault) / Settings-UI unter `/bingo/settings` |
-| Standard-Begriffe | Vorschlagsliste für neue Räume | Tabelle `bingo_config` (Einmal-Import aus `terms.txt`), sonst `DEFAULT_TERMS` |
+| Scoreboard active | Counts first wins per player | `PUT /prefs` (`scoreboard_enabled`, Vault) / settings UI at `/bingo/settings` |
+| Max. terms per room (`max_terms`) | Category *Limits*, default 200; above that `422` | Core settings dialog |
+| Max. characters per term (`max_term_length`) | Default 80; above that `422` | Core settings dialog |
+| Max. open rooms per user (`max_sessions_per_user`) | Default 20; above that `429` until a room closes (24 h inactivity) | Core settings dialog |
+| Max. players per room (`max_players_per_session`) | Default 50; above that `429` | Core settings dialog |
+| Default terms | Suggestion list for new rooms | Table `bingo_config` (one-time import from `terms.txt`), otherwise `DEFAULT_TERMS` |
 
 ---
 
-## Internationaliserung
+## Internationalization
 
-Das Plugin registriert den i18n-Namespace `bingo`. Übersetzungsdateien unter `locales/bingo.<locale>.json` werden automatisch beim Laden in den Lyndrix-Katalog aufgenommen. Der React-Client bezieht sie über `GET /api/i18n/{locale}?ns=bingo`.
+The plugin registers the i18n namespace `bingo`. Translation files under `locales/bingo.<locale>.json` are automatically included in the Lyndrix catalog when loaded. The React client obtains them via `GET /api/i18n/{locale}?ns=bingo`.
 
 ---
 
-## React-Routen
+## React Routes
 
-| Pfad | Beschreibung |
+| Path | Description |
 |---|---|
-| `/bingo` | Hauptansicht: Raumliste, Spielfeld |
-| `/bingo/settings` | Einstellungen (Buzzword-Liste, Raumoptionen) |
+| `/bingo` | Main view: room list, game board |
+| `/bingo/settings` | Settings (buzzword list, room options) |
 
 ---
 
-## Design-Entscheidungen
+## Design Decisions
 
-- **Spielzustand in der Datenbank (ab 1.2.0):** Hinter einem Load-Balancer landet jede Anfrage auf einer beliebigen Instanz; ein Zustand im Arbeitsspeicher würde Räume „verschwinden" lassen. Deshalb liegen Räume, Spieler und Bestenliste in der gemeinsamen DB.
-- **React-only UI:** Meeting Bingo demonstriert die reine React-Plugin-Architektur. Es gibt keine NiceGUI-Seite — der Fallback auf NiceGUI (in `entrypoint.py`) existiert nicht.
-- **Referenz-Plugin:** Dieses Plugin eignet sich als Vorlage für neue Plugins mit React-only-Frontend und Vault-gestützter Konfiguration.
+- **Game state in the database (from 1.2.0):** Behind a load balancer, every request lands on an arbitrary instance; in-memory state would make rooms "disappear". That is why rooms, players and the leaderboard are kept in the shared DB.
+- **React-only UI:** Meeting Bingo demonstrates the pure React plugin architecture. There is no NiceGUI page — the fallback to NiceGUI (in `entrypoint.py`) does not exist.
+- **Reference plugin:** This plugin is suitable as a template for new plugins with a React-only frontend and Vault-backed configuration.
 
 ---
 
-## Entwicklung & Tests
+## Development & Testing
 
 ```bash
-# Aus dem Plugin-Verzeichnis (lyndrix-plugin-meeting-bingo/)
+# From the plugin directory (lyndrix-plugin-meeting-bingo/)
 pip install -r requirements-dev.txt
 
-# Tests ausführen
+# Run tests
 pytest
 
-# Typprüfung
+# Type checking
 mypy .
 
 # Linter
 ruff check .
 
-# Formatter prüfen
+# Check formatter
 black --check .
 ```
 
-Die Service-Schicht (`app/logic/service.py`) ist ohne laufenden Core testbar: die Tests ersetzen `db_instance` durch eine SQLite-In-Memory-Engine und simulieren zwei Instanzen mit zwei `BingoService`-Objekten. Im Dev-Container ausführen (siehe `lyndrix-dev/CLAUDE.md`, `PYTHONPATH=/app`).
+The service layer (`app/logic/service.py`) is testable without a running core: the tests replace `db_instance` with a SQLite in-memory engine and simulate two instances with two `BingoService` objects. Run in the dev container (see `lyndrix-dev/CLAUDE.md`, `PYTHONPATH=/app`).
